@@ -1,0 +1,36 @@
+name: Daily Morning Brief
+
+on:
+  schedule:
+    # 6:30am US Central (12:30 UTC) every weekday
+    - cron: "30 12 * * 1-5"
+  workflow_dispatch: {}  # allow manual trigger
+
+permissions:
+  contents: write  # commit the brief back to the repo
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+      - name: Generate synthetic fleet (placeholder — replace with real connector)
+        run: python data/synthetic/generate_fleet.py
+      - name: Run brief
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python -m src.scheduler --verbose
+      - name: Commit brief
+        run: |
+          git config user.name "Daily Brief Bot"
+          git config user.email "actions@github.com"
+          git add briefs/
+          git diff --staged --quiet || git commit -m "Daily brief $(date -u +%Y-%m-%d)"
+          git push
