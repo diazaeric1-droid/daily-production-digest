@@ -4,9 +4,11 @@
 
 Built by a Staff Production Engineer (ex-OXY, ex-Shell) who used to write this brief by hand at 6am every morning.
 
-[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen)](https://daily-production-digest.streamlit.app)
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen)](https://daily-pe-digest.streamlit.app)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
+
+**Try it now → [daily-pe-digest.streamlit.app](https://daily-pe-digest.streamlit.app)**
 
 ---
 
@@ -21,7 +23,7 @@ This system collapses that to 30 seconds. Scheduled, deterministic, repeatable.
 Every morning (cron, GitHub Actions, or Streamlit "Run Now" button):
 
 1. **Ingests** the last 24 hours of fleet SCADA (synthetic generator included; production deployments plug into PI / Ignition / OSIsoft historians)
-2. **Detects anomalies** with deterministic Python rules — rate drops >15% vs. 7-day baseline, intake pressure trending toward zero, motor temp spikes, runtime degradation, amps creep
+2. **Detects anomalies** with deterministic Python rules — rate drops vs. 7-day baseline (MEDIUM >15%, HIGH >25%), intake pressure trending toward zero, motor temp spikes, runtime degradation, and amps creep (least-squares trend over an 8-day window)
 3. **Calls Claude** to write a one-page brief in Senior-PE voice — leads with top priorities, includes field summary stats, surfaces what changed, ends with action items
 4. **Persists the brief** to disk + Streamlit history view so the asset team can scroll back
 

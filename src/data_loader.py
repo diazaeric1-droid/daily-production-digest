@@ -28,7 +28,9 @@ def load_fleet(data_dir: str | Path) -> dict[str, pd.DataFrame]:
 
 def fleet_summary(fleet: dict[str, pd.DataFrame]) -> dict[str, float]:
     """Aggregate fleet-wide stats from the most recent day per well."""
-    latest_rows = [df.iloc[-1] for df in fleet.values()]
+    # Skip empty frames (e.g. a shut-in / brand-new well a historian returns with
+    # no rows) instead of raising IndexError on .iloc[-1].
+    latest_rows = [df.iloc[-1] for df in fleet.values() if len(df)]
     total_bopd = sum(r["bopd"] for r in latest_rows)
     total_bfpd = sum(r["bfpd"] for r in latest_rows)
     avg_runtime = sum(r["runtime_pct"] for r in latest_rows) / max(len(latest_rows), 1)

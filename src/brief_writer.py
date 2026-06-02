@@ -42,12 +42,14 @@ def write_brief(
     summary: dict,
     anomalies: list[Anomaly],
     brief_date: str | None = None,
-    model: str = "claude-sonnet-4-6",
+    model: str | None = None,
     client: Anthropic | None = None,
 ) -> str:
+    load_dotenv()
     if client is None:
-        load_dotenv()
         client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    # Honor the MODEL env var that .env.example documents; fall back to the default.
+    model = model or os.environ.get("MODEL", "claude-sonnet-4-6")
 
     brief_date = brief_date or date.today().isoformat()
     anomaly_dicts = [{**asdict(a)} for a in anomalies]

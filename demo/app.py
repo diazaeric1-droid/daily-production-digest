@@ -15,14 +15,30 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src import __version__
 from src.anomaly_detector import scan_fleet
 from src.data_loader import fleet_summary, load_fleet
 
 
 st.set_page_config(page_title="Daily Production Digest", page_icon="📅", layout="wide")
 
-st.title("Daily Production Digest")
+st.title(f"Daily Production Digest `v{__version__}`")
 st.caption("Scheduled AI agent that writes a morning brief for asset teams. Built by an ex-OXY / ex-Shell Staff PE.")
+
+with st.expander("🆕 What's new in v0.2.0"):
+    st.markdown(
+        "- **Robust anomaly detection** — rolling median + MAD robust z-scores; "
+        "each flag reports *N sigma off this well's own baseline*.\n"
+        "- **Decline-aware rate-drop flagging** — expected Arps rate (log-linear "
+        "decline fit), not a flat 7-day mean, so healthy decliners stop over-flagging.\n"
+        "- **Least-squares trend slopes** — recovers an amps-creep well the old "
+        "2-point estimator missed.\n"
+        "- **Pluggable historian adapter protocol** — `FleetSource` + a second "
+        "(SQLite / time-range) adapter alongside the CSV loader.\n"
+        "- **Backtest harness** — precision / recall / lead-time vs. seeded anomalies "
+        "(`python -m src.backtest`).\n"
+        "- Empty/short-frame guards; honors the `MODEL` env var."
+    )
 
 DATA_DIR = REPO_ROOT / "data" / "synthetic" / "fleet"
 BRIEFS_DIR = REPO_ROOT / "briefs"
