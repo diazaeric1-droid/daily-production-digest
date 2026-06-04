@@ -70,6 +70,10 @@ _bootstrap_fleet()
 
 with st.sidebar:
     st.header("Generate brief")
+    byok_key = st.text_input(
+        "🔑 Anthropic API key (optional)", type="password",
+        help="Bring your own key — used only for this session, never stored. Powers the "
+             "Senior-PE narrated brief. Without it, a deterministic brief is rendered instead.")
     if st.button("Run morning brief now", type="primary"):
         with st.spinner("Scanning fleet + writing brief…"):
             from src.brief_writer import MissingAPIKey, render_brief_markdown, write_brief
@@ -77,12 +81,16 @@ with st.sidebar:
             summary = fleet_summary(fleet)
             acknowledged = load_acknowledgements(REPO_ROOT / "acknowledged.yml")
             anomalies = scan_fleet(fleet, acknowledged=acknowledged)
+            client = None
+            if byok_key:
+                from anthropic import Anthropic
+                client = Anthropic(api_key=byok_key)
             try:
-                brief_md = write_brief(summary, anomalies)
+                brief_md = write_brief(summary, anomalies, client=client)
             except MissingAPIKey:
                 brief_md = render_brief_markdown(summary, anomalies)
-                st.info("No ANTHROPIC_API_KEY — generated a deterministic brief "
-                        "(detection is deterministic; the LLM only adds prose).")
+                st.info("No API key entered — generated a deterministic brief. Add your Anthropic "
+                        "key in the sidebar for the Senior-PE narrated version.")
             today = date.today().isoformat()
             (BRIEFS_DIR / f"{today}.md").write_text(brief_md)
         st.success("Brief generated. Reload page.")
