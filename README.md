@@ -23,9 +23,10 @@ This system collapses that to 30 seconds. Scheduled, deterministic, repeatable.
 Every morning (cron, GitHub Actions, or Streamlit "Run Now" button):
 
 1. **Ingests** the last 24 hours of fleet SCADA (synthetic generator included; production deployments plug into PI / Ignition / OSIsoft historians)
-2. **Detects anomalies** with deterministic Python rules — rate drops vs. 7-day baseline (MEDIUM >15%, HIGH >25%), intake pressure trending toward zero, motor temp spikes, runtime degradation, and amps creep (least-squares trend over an 8-day window)
-3. **Calls Claude** to write a one-page brief in Senior-PE voice — leads with top priorities, includes field summary stats, surfaces what changed, ends with action items
-4. **Persists the brief** to disk + Streamlit history view so the asset team can scroll back
+2. **Detects anomalies** with deterministic Python rules — decline-aware rate drops (Arps fit, not a flat mean), intake-pressure collapse, motor-temp spikes, runtime degradation, amps creep, and **data-quality events** (comms loss vs. metering dropout vs. real trip)
+3. **Prices each flag** — converts a rate drop into **deferred barrels and $/day**, and ranks the brief by money at risk, not z-score
+4. **Suppresses known events** via `acknowledged.yml` so a planned workover doesn't re-fire HIGH every morning (alarm-fatigue control)
+5. **Writes the brief** — Claude narrates in Senior-PE voice (or a deterministic template when no API key is set; detection was always deterministic), then persists to disk + a Streamlit history view
 
 ## Architecture
 
@@ -44,7 +45,9 @@ Every morning (cron, GitHub Actions, or Streamlit "Run Now" button):
                        └──────────────────────────┘
 ```
 
-LLM is used only for the narrative layer. Anomaly detection is deterministic Python — engineers trust the numbers, the LLM writes them up.
+LLM is used only for the narrative layer. Anomaly detection is deterministic Python — engineers trust the numbers, the LLM writes them up. **With no API key the brief is still produced** (deterministic template), so cron/CI never silently fail.
+
+**Backtest honesty:** `python -m src.backtest` scores each rule against seeded anomalies *and* near-threshold decoy wells, so precision/recall aren't a trivial 1.00. It shows, for example, the flat-mean rate-drop rule false-positiving on a steep-but-healthy decliner (precision 0.50) while the decline-aware rule correctly stays quiet (1.00) — the concrete justification for the refinement. Lead-time is reported as detection latency from fault onset + early-warning days before full manifestation.
 
 ## Quick start
 
@@ -71,7 +74,7 @@ streamlit run demo/app.py
 0 6 * * * cd /path/to/daily-production-digest && /path/to/.venv/bin/python -m src.scheduler
 ```
 
-**GitHub Actions (free, runs in cloud):** see `.github/workflows/morning-brief.yml`. Set `ANTHROPIC_API_KEY` as a repo secret; the workflow runs daily at 6am Central, commits the brief back to the repo, and posts a Slack notification if any wells hit HIGH priority.
+**GitHub Actions (free, runs in cloud):** see `.github/workflows/morning-brief.yml`. Set `ANTHROPIC_API_KEY` as a repo secret; the workflow runs every weekday morning (`30 11 * * 1-5` UTC ≈ 6:30am Central during CDT — GitHub cron is fixed-UTC with no DST), commits the brief back to the repo, and — if you also set a `SLACK_WEBHOOK_URL` secret — posts the HIGH-priority items to Slack.
 
 **Streamlit Cloud:** the deployed demo has a "Run Now" button so anyone can see what a fresh brief looks like without waiting.
 
@@ -81,12 +84,21 @@ See [`briefs/sample.md`](briefs/sample.md) for a complete agent-generated brief 
 
 ## Roadmap
 
-- [x] v0.1 — Anomaly detector + Claude brief writer + Streamlit history
-- [x] v0.1 — GitHub Actions workflow for daily cloud execution
-- [ ] v0.2 — Plug-in connector pattern (PI, Ignition, Quorum)
-- [ ] v0.3 — Slack / email distribution with PDF attachment
-- [ ] v0.4 — Multi-asset support (separate briefs per asset team)
-- [ ] v0.5 — Trend comparison vs. last week (not just last 24h)
+- [x] v0.1 — Anomaly detector + Claude brief writer + Streamlit history; GitHub Actions daily run
+- [x] v0.2 — Robust median/MAD z-scores, decline-aware rate drop, least-squares slopes, pluggable historian adapters (CSV / SQLite), backtest harness
+- [x] v0.3 — Deferred-bbl/$ ranking, sensor-dropout vs. comms-loss vs. trip detection, acknowledge/suppress (alarm fatigue), water-cut context, no-API-key deterministic brief, honest backtest (decoys + real lead-time), optional Slack notify
+- [ ] v0.4 — Route/pad grouping + per-anomaly owner from a routes file
+- [ ] v0.5 — Trend vs. last week (diff today's anomaly set against yesterday's brief)
+- [ ] v0.6 — Chain into the ESP failure-risk model + AFE Copilot (detect → predict → draft authorization)
+
+## Part of a multi-agent pipeline
+
+This is the **detect** stage of a detect → predict → authorize chain: this digest
+flags genuine ESP/pump-failure signatures and hands the well to the
+[ESP Failure-Risk Agent](../esp-failure-risk-agent) (30-day risk + failure-mode
+classification), which hands a diagnosis to the [AFE Copilot](../afe-copilot) to draft
+the authorization. Export the handoff with `python -m src.handoff`. See
+[`../pe-pipeline/PIPELINE.md`](../pe-pipeline/PIPELINE.md) and run the whole chain with `python3 ../pe-pipeline/pe_chain.py`.
 
 ## License
 

@@ -99,7 +99,11 @@ class SQLiteFleetSource:
 
     def __init__(self, db_path: str | Path, table: str | None = None):
         self.db_path = str(db_path)
-        self.table = table or self.TABLE
+        table = table or self.TABLE
+        # Guard the table identifier (it's interpolated into SQL, not bindable).
+        if not table.replace("_", "").isalnum():
+            raise ValueError(f"Invalid table name: {table!r}")
+        self.table = table
 
     def load_fleet(self) -> dict[str, pd.DataFrame]:
         cols = ", ".join(["well_id", *SCADA_COLUMNS])
@@ -131,7 +135,10 @@ class SQLiteFleetSource:
         all_rows = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(
             columns=["well_id", *SCADA_COLUMNS]
         )
-        all_rows["date"] = pd.to_datetime(all_rows["date"]).dt.strftime("%Y-%m-%d")
+        # Store full ISO datetime, not date-only — real historians (PI/Ignition) are
+        # sub-daily, and truncating to midnight collapses intraday readings to one key.
+        # ISO-8601 text remains lexicographically sortable for the ORDER BY date.
+        all_rows["date"] = pd.to_datetime(all_rows["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
         conn = sqlite3.connect(str(db_path))
         try:
             all_rows.to_sql(table, conn, if_exists="replace", index=False)

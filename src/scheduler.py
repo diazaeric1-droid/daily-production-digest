@@ -9,13 +9,14 @@ from pathlib import Path
 from rich.console import Console
 from rich.markdown import Markdown
 
-from .anomaly_detector import scan_fleet
-from .brief_writer import write_brief
+from .anomaly_detector import load_acknowledgements, scan_fleet
+from .brief_writer import MissingAPIKey, render_brief_markdown, write_brief
 from .data_loader import fleet_summary, load_fleet
 
 
 DEFAULT_DATA_DIR = "data/synthetic/fleet"
 BRIEFS_DIR = Path("briefs")
+ACK_PATH = "acknowledged.yml"
 
 
 def run(data_dir: str = DEFAULT_DATA_DIR, brief_date: str | None = None, verbose: bool = False) -> Path:
@@ -36,16 +37,26 @@ def run(data_dir: str = DEFAULT_DATA_DIR, brief_date: str | None = None, verbose
 
     if verbose:
         console.print("[bold cyan]Scanning for anomalies...[/]")
-    anomalies = scan_fleet(fleet)
+    acknowledged = load_acknowledgements(ACK_PATH)
+    anomalies = scan_fleet(fleet, acknowledged=acknowledged)
     if verbose:
         sev_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
         for a in anomalies:
             sev_counts[a.severity] += 1
-        console.print(f"[bold]Anomalies:[/] {sev_counts['HIGH']} HIGH · {sev_counts['MEDIUM']} MEDIUM · {sev_counts['LOW']} LOW")
+        deferred = sum(a.deferred_usd_per_day for a in anomalies if not a.acknowledged)
+        console.print(f"[bold]Anomalies:[/] {sev_counts['HIGH']} HIGH · {sev_counts['MEDIUM']} MEDIUM · "
+                      f"{sev_counts['LOW']} LOW · ${deferred:,.0f}/day deferred")
 
-    if verbose:
-        console.print("[bold cyan]Writing brief...[/]")
-    brief_md = write_brief(summary, anomalies, brief_date=brief_date)
+    # Detection is deterministic; the LLM only narrates. With no API key we still
+    # emit a real (templated) brief instead of crashing.
+    try:
+        if verbose:
+            console.print("[bold cyan]Writing brief (LLM)...[/]")
+        brief_md = write_brief(summary, anomalies, brief_date=brief_date)
+    except MissingAPIKey:
+        if verbose:
+            console.print("[yellow]No ANTHROPIC_API_KEY — writing deterministic brief.[/]")
+        brief_md = render_brief_markdown(summary, anomalies, brief_date=brief_date)
 
     BRIEFS_DIR.mkdir(exist_ok=True)
     out_path = BRIEFS_DIR / f"{brief_date}.md"

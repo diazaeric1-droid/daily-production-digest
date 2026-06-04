@@ -88,7 +88,8 @@ class RuleScore:
     tp: int
     fp: int
     fn: int
-    lead_days: list[int]
+    latencies: list[int]        # days from fault ONSET to first detection (ramp faults)
+    early_warnings: list[int]   # days BEFORE full manifestation we first fired
 
     @property
     def precision(self) -> float:
@@ -106,47 +107,72 @@ class RuleScore:
         return 2 * p * r / (p + r) if (p + r) else 0.0
 
     @property
+    def mean_latency(self) -> float:
+        return sum(self.latencies) / len(self.latencies) if self.latencies else float("nan")
+
+    @property
     def mean_lead(self) -> float:
-        return sum(self.lead_days) / len(self.lead_days) if self.lead_days else 0.0
+        return sum(self.early_warnings) / len(self.early_warnings) if self.early_warnings else 0.0
 
 
-def _first_fire_lead(detector, scada: pd.DataFrame, manifest_days: int) -> int:
-    """Walk forward truncating to each day; return how many days BEFORE the
-    fault's full manifestation the rule first fired (>=0 = early/on-time)."""
+def _first_fire(detector, scada: pd.DataFrame, manifest_days: int) -> tuple[int, int] | None:
+    """Walk history forward one day at a time; on the first day the rule fires,
+    return (detection_latency, early_warning):
+
+    - ``detection_latency`` = days from fault ONSET (n - manifest_days) to detection.
+      For a single-day step fault (manifest_days=1) this is 0 by construction — you
+      cannot pre-warn a same-day step. For a multi-day ramp it's how deep into the
+      ramp we were when we caught it (lower = faster).
+    - ``early_warning`` = days before the fault FULLY manifests (the final day) that
+      we first fired (n - end).
+
+    Returns None if the rule never fires over the truncated histories.
+    """
     n = len(scada)
+    onset_idx = n - manifest_days          # 0-based index where the fault begins
     for end in range(1, n + 1):
         if detector("w", scada.iloc[:end]) is not None:
-            # full manifestation is at the last day; fault begins manifest_days back
-            return (n - end)  # days of lead vs the final (fully-manifested) day
-    return 0
+            first_idx = end - 1            # last row included in this truncation
+            latency = max(first_idx - onset_idx, 0)
+            early_warning = max((n - 1) - first_idx, 0)
+            return latency, early_warning
+    return None
 
 
 def score_rules(fleet: dict[str, pd.DataFrame], truth: dict[str, set[str]]) -> list[RuleScore]:
     scores: list[RuleScore] = []
     for cat, detector in _DETECTORS.items():
         tp = fp = fn = 0
-        leads: list[int] = []
+        latencies: list[int] = []
+        early: list[int] = []
         for well_id, scada in fleet.items():
             fired = detector(well_id, scada) is not None
             is_truth = cat in truth.get(well_id, set())
             if fired and is_truth:
                 tp += 1
                 manifest = _FAULT_MANIFEST_DAYS.get(cat, 1)
-                leads.append(_first_fire_lead(detector, scada, manifest))
+                res = _first_fire(detector, scada, manifest)
+                if res is not None:
+                    # Only ramp faults (manifest_days > 1) yield an informative latency.
+                    if manifest > 1:
+                        latencies.append(res[0])
+                    early.append(res[1])
             elif fired and not is_truth:
                 fp += 1
             elif not fired and is_truth:
                 fn += 1
-        scores.append(RuleScore(cat, tp, fp, fn, leads))
+        scores.append(RuleScore(cat, tp, fp, fn, latencies, early))
     return scores
 
 
 def print_report(scores: list[RuleScore]) -> None:
-    print(f"{'rule':<28}{'TP':>4}{'FP':>4}{'FN':>4}{'prec':>8}{'rec':>8}{'F1':>8}{'lead(d)':>9}")
-    print("-" * 77)
+    print(f"{'rule':<28}{'TP':>4}{'FP':>4}{'FN':>4}{'prec':>8}{'rec':>8}{'F1':>8}"
+          f"{'latency':>9}{'lead(d)':>9}")
+    print("-" * 86)
     for s in scores:
+        lat = f"{s.mean_latency:.1f}" if s.latencies else "—"
         print(f"{s.rule:<28}{s.tp:>4}{s.fp:>4}{s.fn:>4}"
-              f"{s.precision:>8.2f}{s.recall:>8.2f}{s.f1:>8.2f}{s.mean_lead:>9.1f}")
+              f"{s.precision:>8.2f}{s.recall:>8.2f}{s.f1:>8.2f}{lat:>9}{s.mean_lead:>9.1f}")
     tot_tp = sum(s.tp for s in scores)
     tot_fp = sum(s.fp for s in scores)
     tot_fn = sum(s.fn for s in scores)

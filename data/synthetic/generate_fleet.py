@@ -70,6 +70,46 @@ def well_with_amps_creep(seed: int) -> pd.DataFrame:
     return df
 
 
+# ---- decoys: look anomalous but should NOT fire (so P/R aren't trivially 1.0) ---
+
+def decoy_subthreshold_dip(seed: int) -> pd.DataFrame:
+    """Last day dips ~12% — below the 15% flag threshold. Should NOT fire."""
+    df = healthy_well(seed)
+    df.loc[df.index[-1], "bopd"] = df["bopd"].iloc[-1] * 0.88
+    return df
+
+
+def decoy_steep_decliner(seed: int) -> pd.DataFrame:
+    """A healthy but fast natural decliner (~4%/day). The flat-mean rate_drop rule
+    over-flags this (today is well below the trailing mean) — a FALSE POSITIVE — but
+    the decline-aware rule correctly sees it's on-trend and stays quiet. This is the
+    pair that justifies the decline-aware refinement."""
+    df = healthy_well(seed)
+    rng = np.random.default_rng(seed)
+    t = np.arange(N_DAYS)
+    # Higher-rate well on a steep ~6%/day natural decline: the trailing-mean drop
+    # exceeds 15% so flat-mean rate_drop FIRES (a false positive), while the
+    # decline-aware rule fits the trend and correctly stays quiet.
+    df["bopd"] = np.clip(350 * 0.94 ** t + rng.normal(0, 2, N_DAYS), 1, None)
+    return df
+
+
+def decoy_noisy_amps(seed: int) -> pd.DataFrame:
+    """High day-to-day amps noise but zero trend — should NOT trip amps_creep."""
+    df = healthy_well(seed)
+    df["motor_amps"] = np.clip(df["motor_amps"] + np.random.default_rng(seed).normal(0, 4, N_DAYS), 50, 72)
+    return df
+
+
+def decoy_borderline_intake(seed: int) -> pd.DataFrame:
+    """Intake dips toward ~45 psi (above the 40 psi threshold) — should NOT fire."""
+    df = healthy_well(seed)
+    p = df["intake_pressure_psi"].to_numpy(copy=True)
+    p[-5:] = np.linspace(p[-5], 45, 5)
+    df["intake_pressure_psi"] = p
+    return df
+
+
 # ---- driver -----------------------------------------------------------------
 
 SEEDED_ANOMALIES = [
@@ -81,21 +121,30 @@ SEEDED_ANOMALIES = [
     ("well_041", well_with_amps_creep),          # MEDIUM amps creep
 ]
 
+# Negatives that sit near a threshold — they should NOT fire. They make the
+# backtest produce real false positives / true negatives instead of a perfect score.
+DECOY_WELLS = [
+    ("well_045", decoy_subthreshold_dip),
+    ("well_046", decoy_steep_decliner),
+    ("well_047", decoy_noisy_amps),
+    ("well_048", decoy_borderline_intake),
+]
+
 
 def main():
-    seeded_names = {name for name, _ in SEEDED_ANOMALIES}
-    for name, builder in SEEDED_ANOMALIES:
+    special = {**dict(SEEDED_ANOMALIES), **dict(DECOY_WELLS)}
+    for name, builder in {**dict(SEEDED_ANOMALIES), **dict(DECOY_WELLS)}.items():
         idx = int(name.split("_")[1])
-        df = builder(seed=idx)
-        df.to_csv(OUT / f"{name}.csv", index=False)
+        builder(seed=idx).to_csv(OUT / f"{name}.csv", index=False)
 
     for i in range(1, N_WELLS + 1):
         name = f"well_{i:03d}"
-        if name in seeded_names:
+        if name in special:
             continue
         healthy_well(seed=i).to_csv(OUT / f"{name}.csv", index=False)
 
-    print(f"Wrote {N_WELLS} wells to {OUT} ({len(SEEDED_ANOMALIES)} with seeded anomalies)")
+    print(f"Wrote {N_WELLS} wells to {OUT} "
+          f"({len(SEEDED_ANOMALIES)} seeded anomalies, {len(DECOY_WELLS)} near-threshold decoys)")
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src import __version__
-from src.anomaly_detector import scan_fleet
+from src.anomaly_detector import load_acknowledgements, scan_fleet
 from src.data_loader import fleet_summary, load_fleet
 
 
@@ -36,19 +36,19 @@ st.set_page_config(page_title="Daily Production Digest", page_icon="📅", layou
 st.title(f"Daily Production Digest `v{__version__}`")
 st.caption("Scheduled AI agent that writes a morning brief for asset teams. Built by an ex-OXY / ex-Shell Staff PE.")
 
-with st.expander("🆕 What's new in v0.2.0"):
+with st.expander(f"🆕 What's new in v{__version__}"):
     st.markdown(
-        "- **Robust anomaly detection** — rolling median + MAD robust z-scores; "
-        "each flag reports *N sigma off this well's own baseline*.\n"
-        "- **Decline-aware rate-drop flagging** — expected Arps rate (log-linear "
-        "decline fit), not a flat 7-day mean, so healthy decliners stop over-flagging.\n"
-        "- **Least-squares trend slopes** — recovers an amps-creep well the old "
-        "2-point estimator missed.\n"
-        "- **Pluggable historian adapter protocol** — `FleetSource` + a second "
-        "(SQLite / time-range) adapter alongside the CSV loader.\n"
-        "- **Backtest harness** — precision / recall / lead-time vs. seeded anomalies "
-        "(`python -m src.backtest`).\n"
-        "- Empty/short-frame guards; honors the `MODEL` env var."
+        "- **Ranked by deferred barrels & dollars**, not z-score — the brief leads with "
+        "where the money is leaking, not the alphabetically-first well.\n"
+        "- **Sensor-dropout vs. comms-loss vs. real-trip** detection — a flat-lined "
+        "transmitter is flagged as a data-quality event, not a phantom 100% rate drop.\n"
+        "- **Acknowledge / suppress known events** (`acknowledged.yml`) so a planned "
+        "workover doesn't re-fire HIGH every morning (alarm-fatigue control).\n"
+        "- **Water-cut context** on rate drops — distinguishes watering-out from a pump issue.\n"
+        "- **Works with no API key** — a deterministic brief is rendered when the LLM "
+        "narrator is unavailable (detection was always deterministic).\n"
+        "- **Honest backtest** — near-threshold decoy wells + a real lead-time/latency metric "
+        "(`python -m src.backtest`)."
     )
 
 DATA_DIR = REPO_ROOT / "data" / "synthetic" / "fleet"
@@ -72,11 +72,17 @@ with st.sidebar:
     st.header("Generate brief")
     if st.button("Run morning brief now", type="primary"):
         with st.spinner("Scanning fleet + writing brief…"):
-            from src.brief_writer import write_brief
+            from src.brief_writer import MissingAPIKey, render_brief_markdown, write_brief
             fleet = load_fleet(DATA_DIR)
             summary = fleet_summary(fleet)
-            anomalies = scan_fleet(fleet)
-            brief_md = write_brief(summary, anomalies)
+            acknowledged = load_acknowledgements(REPO_ROOT / "acknowledged.yml")
+            anomalies = scan_fleet(fleet, acknowledged=acknowledged)
+            try:
+                brief_md = write_brief(summary, anomalies)
+            except MissingAPIKey:
+                brief_md = render_brief_markdown(summary, anomalies)
+                st.info("No ANTHROPIC_API_KEY — generated a deterministic brief "
+                        "(detection is deterministic; the LLM only adds prose).")
             today = date.today().isoformat()
             (BRIEFS_DIR / f"{today}.md").write_text(brief_md)
         st.success("Brief generated. Reload page.")
@@ -112,16 +118,23 @@ with col2:
     st.metric("Water cut", f"{summary['water_cut_pct']:.0f}%")
     st.metric("Avg runtime", f"{summary['avg_runtime_pct']:.1f}%")
 
-    anomalies = scan_fleet(fleet)
+    acknowledged = load_acknowledgements(REPO_ROOT / "acknowledged.yml")
+    anomalies = scan_fleet(fleet, acknowledged=acknowledged)
+    active = [a for a in anomalies if not a.acknowledged]
     if anomalies:
         st.subheader("Anomalies (deterministic)")
-        sev_counts = pd.Series([a.severity for a in anomalies]).value_counts()
-        for sev, count in sev_counts.items():
-            st.metric(f"{sev}", int(count))
+        total_deferred = sum(a.deferred_usd_per_day for a in active)
+        st.metric("Deferred production at risk", f"${total_deferred:,.0f}/day")
+        sev_counts = pd.Series([a.severity for a in active]).value_counts()
+        cols = st.columns(max(len(sev_counts), 1))
+        for c, (sev, count) in zip(cols, sev_counts.items()):
+            c.metric(sev, int(count))
 
-        with st.expander("Drill in"):
+        with st.expander("Drill in (ranked by deferred $)"):
             df = pd.DataFrame([
-                {"Well": a.well_id, "Sev": a.severity, "Category": a.category, "Headline": a.headline}
+                {"Well": a.well_id, "Sev": a.severity, "Category": a.category,
+                 "Deferred $/day": f"${a.deferred_usd_per_day:,.0f}" if a.deferred_usd_per_day else "—",
+                 "Headline": a.headline, "Ack": "🔕" if a.acknowledged else ""}
                 for a in anomalies
             ])
             st.dataframe(df, use_container_width=True, hide_index=True)
