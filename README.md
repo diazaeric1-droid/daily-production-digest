@@ -1,3 +1,15 @@
+---
+title: Daily Production Digest
+emoji: 📅
+colorFrom: blue
+colorTo: orange
+sdk: streamlit
+sdk_version: 1.50.0
+app_file: demo/app.py
+pinned: true
+license: mit
+---
+
 # Daily Production Digest
 
 > A scheduled AI agent that runs every morning, scans your fleet's overnight SCADA, flags anomalies, and writes a one-page brief in the format a Senior PE hands to the asset team's daily standup.
