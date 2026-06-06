@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-06-06
+
+### Added
+- **Unified dark + navy suite theme** and a **cross-app sidebar suite navigator** so the
+  digest looks and links like one product alongside the rest of the PE suite.
+- **First visualizations** (previously text-only): a **fleet oil-rate trend** and a
+  **top deferred-$ offender bar** chart surface the leak at a glance.
+- **Rolling lost-production ledger**: cumulative deferred **$/bbl by cause** over a trailing
+  window (MTD-style), with a **deep-link to Deferment IQ** for full period loss accounting.
+- **Shared fleet registry**: Permian field/formation identity is now consistent across the suite.
+
+### Changed
+- **Performance**: cached fleet load/scan, and the app **auto-selects the new brief** after
+  generation so the freshest output is shown without a manual pick.
+
+### Fixed
+- Swept the deprecated `use_container_width` (→ `width="stretch"`); requires `streamlit>=1.50`.
+
 ## [0.3.0] — 2026-06-03
 
 ### Added
