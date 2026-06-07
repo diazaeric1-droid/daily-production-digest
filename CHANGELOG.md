@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] — 2026-06-07
+### Fixed
+- **Time-range toggle stuck on 30D** — `st.segmented_control` was created with both `default=` and `key=` (the default re-asserted on rerun and snapped the selection back). It now owns its selection in `session_state`, so **7D/30D/3mo/6mo/1Y/Lifetime** re-slice every chart + KPI (verified via AppTest).
+### Changed
+- **Light theme** — suite-wide migration from dark/navy to a professional light palette (white surfaces, `plotly_white` charts, navy/blue accents retained); transparent fixed header so the title never clips. `runtime.txt` pinned to Python 3.11.
+
 ## [0.6.0] — 2026-06-07
 
 ### Added
