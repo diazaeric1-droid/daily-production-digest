@@ -429,6 +429,7 @@ def render_well(well_id: str) -> None:
         subtitle=f"{meta.lift} · {meta.basin} · {meta.formation} · {meta.area}",
         chips=[(f"v{__version__}", "ver"), (meta.peer_group, "info")],
     )
+    theme.well_cross_links("pe-digest", well_id)
     _back_to_overview()
 
     if df is None or not len(df):
