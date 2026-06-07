@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-06-06
+
+### Added
+- **Fleet explorer (multipage)** — a Fleet Overview plus a **drill-down page per well**
+  (`st.navigation`), each with its own oil/gas/water + SCADA-diagnostic charts and a health note.
+- **Gas channel** — every well now carries **`gas_mcfd`** (GOR-correlated to oil); ~**400 days** of
+  daily history so the new **time-range toggles (7D / 30D / 3mo / 6mo / 1Y / Lifetime)** are meaningful.
+- **Three fleet trend streams** (Total Oil / Gas / Water) over the selected window, plus **production
+  variance** deltas (recent-7d vs window-start) in the snapshot.
+- **Sortable Fleet table** — per-well BOPD, BWPD, MCFD, water-cut, GOR, **lift + lateral length**
+  (from the shared fleet registry), basin·formation, production variance, days-on-prod, anomaly flag.
+- Bootstrap regenerates data if the on-disk schema is stale (missing `gas_mcfd`).
+
 ## [0.4.0] — 2026-06-06
 
 ### Added
