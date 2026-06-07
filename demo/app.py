@@ -56,6 +56,7 @@ from src.data_loader import (
     slice_window,
 )
 from src.ledger import build_ledger
+from src.representative import classify_representative
 
 
 DATA_DIR = REPO_ROOT / "data" / "synthetic" / "fleet"
@@ -96,6 +97,36 @@ def _build_ledger_cached(data_dir: str, ack_path: str, window_days: int = 30):
     fleet = _load_fleet_cached(data_dir)
     acknowledged = load_acknowledgements(ack_path)
     return build_ledger(fleet, window_days=window_days, acknowledged=acknowledged)
+
+
+@st.cache_data(show_spinner=False)
+def _representative_fleet_cached(data_dir: str, window_days: int | None) -> pd.DataFrame:
+    """Per-well representative-vs-anomalous data-quality summary over the window.
+
+    For each well, classify which oil-rate points are representative for decline /
+    type-curve trending (vs shut-ins / zero days, metering dropouts, gross outliers)
+    and report the representative share + excluded count. Deterministic, no API key."""
+    fleet = _load_fleet_cached(data_dir)
+    rows = []
+    for well_id in sorted(fleet):
+        df = fleet[well_id]
+        if df is None or not len(df):
+            continue
+        win = slice_window(df, window_days)
+        try:
+            res = classify_representative(win, rate_col="bopd")
+        except Exception:
+            continue
+        s = res.summary
+        top_reason = max(s.reason_counts, key=s.reason_counts.get) if s.reason_counts else "—"
+        rows.append({
+            "Well": well_id,
+            "Representative %": s.representative_pct,
+            "Points": s.n_points,
+            "Excluded": s.n_excluded,
+            "Top exclusion reason": top_reason,
+        })
+    return pd.DataFrame(rows)
 
 
 def _bootstrap_fleet() -> None:
@@ -167,6 +198,44 @@ def _line(x, y, name, color, y_title, title):
     return theme.style_fig(fig, height=300, legend=False)
 
 
+def _oil_with_representative(win: pd.DataFrame) -> None:
+    """Oil-rate trend with non-representative points (excluded from trending) marked.
+
+    Reuses ``classify_representative`` to flag shut-ins / zero days, metering dropouts,
+    and gross outliers vs a robust decline-aware trend — the points a decline / type
+    curve should be fit WITHOUT. Healthy points are the blue line; excluded points get
+    a distinct red ✕. Guarded so a malformed window never breaks the page."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=win["date"], y=win["bopd"], mode="lines",
+                             name="Oil (BOPD)", line=dict(color=theme.BLUE, width=2)))
+    excl_caption = None
+    try:
+        res = classify_representative(win, rate_col="bopd")
+        mask = ~res["representative"].to_numpy()
+        if mask.any():
+            ex_dates = win["date"].to_numpy()[mask]
+            ex_rates = win["bopd"].to_numpy()[mask]
+            fig.add_trace(go.Scatter(
+                x=ex_dates, y=ex_rates, mode="markers",
+                name="Excluded from trending",
+                marker=dict(color=theme.RED, size=10, symbol="x",
+                            line=dict(width=1.5, color=theme.RED))))
+            s = res.summary
+            reasons = ", ".join(sorted(s.reason_counts)) if s.reason_counts else "—"
+            excl_caption = (f"**{s.n_excluded}** of {s.n_points} points "
+                            f"({s.representative_pct:.0f}% representative) excluded from "
+                            f"trending — {reasons}.")
+    except Exception:
+        excl_caption = None  # never break the chart on a data-quality hiccup
+    fig.update_layout(title="Oil rate (BOPD) — representative vs excluded points",
+                      yaxis_title="BOPD")
+    st.plotly_chart(theme.style_fig(fig, height=300, legend=True), width="stretch")
+    if excl_caption:
+        st.caption(excl_caption)
+    else:
+        st.caption("All points are representative for decline / type-curve trending.")
+
+
 def _anomaly_for(well_id: str, anomalies: list):
     for a in anomalies:
         if a.well_id == well_id:
@@ -201,17 +270,19 @@ def render_overview() -> None:
 
     with st.expander(f"🆕 What's new in v{__version__}"):
         st.markdown(
+            "- **Representative-vs-anomalous data quality** — a new **🧹 Data quality** tab "
+            "classifies which oil-rate points are usable for decline / type-curve trending "
+            "vs which to exclude (shut-ins / zero days, metering dropouts, gross outliers); "
+            "per-well oil charts now mark the **excluded** points. The pre-trending cleaning "
+            "step, distinct from the operational **Anomalies** alerts.\n"
             "- **Fleet explorer (multipage)** — a Fleet Overview plus a **drill-down page "
             "per well** (`st.navigation`), each with its own production + SCADA-diagnostic "
             "charts and a health note.\n"
-            "- **Gas channel** — every well now carries **`gas_mcfd`** (GOR-correlated to oil) "
+            "- **Gas channel** — every well carries **`gas_mcfd`** (GOR-correlated to oil) "
             "and **~400 days** of history, so the **time-range toggle** (7D · 30D · 3mo · 6mo · "
             "1Y · Lifetime) is meaningful.\n"
-            "- **Oil / Gas / Water fleet trends** + a **production-variance** KPI (recent-7d vs "
-            "first-7d of the window) shown as oil/gas/water metric deltas.\n"
-            "- **Sortable fleet table** — one row per well with lift, lateral, basin·formation, "
-            "rates, water cut, GOR, variance, runtime, and the anomaly flag.\n"
-            "- Brief + lost-production ledger retained; brief controls moved into the page body."
+            "- **Oil / Gas / Water fleet trends**, a **production-variance** KPI, a **sortable "
+            "fleet table**, and the **lost-production ledger** — all retained."
         )
 
     fleet = _load_fleet_cached(str(DATA_DIR))
@@ -257,10 +328,11 @@ def render_overview() -> None:
     total_deferred = sum(a.deferred_usd_per_day for a in active)
     k7.metric("Deferred at risk", f"${total_deferred:,.0f}/day")
 
-    # --- brief + offenders + fleet table ------------------------------------
+    # --- brief + offenders + fleet table + data quality ---------------------
     BRIEFS_DIR.mkdir(exist_ok=True)
-    tab_brief, tab_anom, tab_table = st.tabs(
-        ["📝 Morning brief", "🚨 Anomalies", "📋 Fleet table"])
+    tab_brief, tab_anom, tab_table, tab_quality = st.tabs(
+        ["📝 Morning brief", "🚨 Anomalies", "📋 Fleet table",
+         "🧹 Data quality"])
 
     with tab_brief:
         _brief_panel(fleet, anomalies)
@@ -274,6 +346,9 @@ def render_overview() -> None:
         table = build_fleet_table(fleet, window_days=window_days,
                                   anomaly_by_well=anomaly_map)
         st.dataframe(table, width="stretch", hide_index=True)
+
+    with tab_quality:
+        _data_quality_panel(window_days)
 
     # --- lost-production ledger ---------------------------------------------
     _ledger_section()
@@ -354,6 +429,48 @@ def _anomaly_panel(anomalies: list, active: list) -> None:
         for a in anomalies
     ])
     st.dataframe(df, width="stretch", hide_index=True)
+
+
+def _data_quality_panel(window_days: int | None) -> None:
+    """Representative-vs-anomalous data-quality view: which points each well's
+    decline/type-curve trending should be fit on, and which to EXCLUDE (shut-ins /
+    zero days, metering dropouts, gross outliers vs a robust decline-aware trend).
+
+    Distinct from the Anomalies tab: that raises an *operational* alert on the latest
+    day; this is the pre-trending data-cleaning step (a shut-in is a healthy well, just
+    not on-trend data) — the same filtering WellProductivity.jl applies before a fit."""
+    st.caption(
+        "Before decline / type-curve trending, each oil-rate point is classified "
+        "**representative** (usable for a fit) vs **non-representative** (shut-in / "
+        "zero-rate day, metering dropout, or a gross outlier vs a robust decline-aware "
+        "trend). This filters non-representative points so they don't bias the trend — "
+        "separate from the operational alerts in the **Anomalies** tab.")
+
+    rep = _representative_fleet_cached(str(DATA_DIR), window_days)
+    if rep.empty:
+        st.info("No wells with a scannable rate history in the selected window.")
+        return
+
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Fleet representative %", f"{rep['Representative %'].mean():.1f}%",
+              help="Mean over wells of the share of points usable for trending.")
+    q2.metric("Points excluded (window)", f"{int(rep['Excluded'].sum()):,}")
+    q3.metric("Wells with exclusions", int((rep["Excluded"] > 0).sum()))
+
+    # Lowest representative % first — those wells most need data cleaning before a fit.
+    worst = rep.sort_values("Representative %").head(15)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=worst["Representative %"], y=worst["Well"], orientation="h",
+        marker_color=theme.BLUE,
+        text=[f"{v:.0f}%" for v in worst["Representative %"]], textposition="auto"))
+    fig.update_layout(title="Representative data % by well (lowest first)",
+                      xaxis_title="Representative %", xaxis_range=[0, 100])
+    st.plotly_chart(theme.style_fig(fig, height=340, legend=False), width="stretch")
+
+    st.dataframe(rep.sort_values("Representative %"), width="stretch", hide_index=True)
+    st.caption("Open a well in the **Wells** sidebar to see exactly which points are "
+               "marked excluded on its decline chart.")
 
 
 def _ledger_section() -> None:
@@ -469,8 +586,7 @@ def render_well(well_id: str) -> None:
     p_oil, p_gas, p_water, p_wc = st.tabs(
         ["Oil (BOPD)", "Gas (MCFD)", "Water (BWPD)", "Water cut %"])
     with p_oil:
-        st.plotly_chart(_line(win["date"], win["bopd"], "Oil", theme.BLUE,
-                              "BOPD", "Oil rate (BOPD)"), width="stretch")
+        _oil_with_representative(win)
     with p_gas:
         st.plotly_chart(_line(win["date"], win["gas_mcfd"], "Gas", theme.AMBER,
                               "MCFD", "Gas rate (MCFD)"), width="stretch")

@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-06-07
+
+### Added
+- **Representative-vs-anomalous data-quality classification** (`src/representative.py`,
+  `classify_representative`) — flags which oil-rate points are **representative** for
+  decline / type-curve trending vs which to **EXCLUDE** (shut-in / zero-rate days,
+  metering dropouts, gross outliers vs a robust decline-aware trend). This is the
+  pre-trending data-cleaning step — distinct from the surveillance alerting in
+  `anomaly_detector` (a shut-in is a healthy well, just not on-trend data). Reuses the
+  existing robust statistics (`robust_z` median/MAD + Arps `_expected_decline_rate`)
+  rather than duplicating them. Deterministic, no API key.
+- **"Data quality — representative vs anomalous" view** — a new overview tab with a
+  fleet representative-% metric, a lowest-first per-well bar, and a sortable table
+  (representative %, points, excluded, top exclusion reason). On each per-well page the
+  oil-rate chart now **marks the excluded points** (distinct red ✕) with a caption of
+  how many were dropped and why.
+
 ## [0.5.0] — 2026-06-06
 
 ### Added
