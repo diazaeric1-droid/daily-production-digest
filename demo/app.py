@@ -155,10 +155,17 @@ def _time_range_control(context: str) -> int | None:
     length in days (None = Lifetime). State is namespaced per ``context`` so the
     overview and each well page remember their own selection across reruns."""
     key = f"range_{context}"
+    # Seed the selection once in session_state instead of passing default=. Passing
+    # BOTH default= and key= to a selection widget is a known cross-version footgun:
+    # on some Streamlit builds the default re-asserts on rerun and snaps the choice
+    # back (the "stuck on 30D" symptom). With the value owned by session_state, every
+    # user click persists and the charts/KPIs re-slice immediately.
+    if key not in st.session_state:
+        st.session_state[key] = DEFAULT_RANGE
     label = st.segmented_control(
-        "Time range", options=list(RANGE_OPTIONS), default=DEFAULT_RANGE,
-        key=key, help="Slices the trailing window for every chart + KPI on this page.")
-    if label is None:  # segmented_control allows clearing the selection
+        "Time range", options=list(RANGE_OPTIONS), key=key,
+        help="Slices the trailing window for every chart + KPI on this page.")
+    if not label:  # single-mode control can be cleared -> fall back to default
         label = DEFAULT_RANGE
     return RANGE_OPTIONS[label]
 
