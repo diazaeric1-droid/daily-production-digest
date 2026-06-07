@@ -234,13 +234,18 @@ def _oil_with_representative(win: pd.DataFrame) -> None:
                             f"trending — {reasons}.")
     except Exception:
         excl_caption = None  # never break the chart on a data-quality hiccup
-    fig.update_layout(title="Oil rate (BOPD) — representative vs excluded points",
+    fig.update_layout(title="Oil Rate (BOPD) — Representative vs Excluded Points",
                       yaxis_title="BOPD")
     st.plotly_chart(theme.style_fig(fig, height=300, legend=True), width="stretch")
     if excl_caption:
         st.caption(excl_caption)
     else:
         st.caption("All points are representative for decline / type-curve trending.")
+    theme.source_note(
+        "Red ✕ marks points excluded from a decline / type-curve fit — shut-in / "
+        "zero-rate days, metering dropouts, or gross outliers (|robust z| > 4 vs. a "
+        "decline-aware robust trend); the blue line is the on-trend rate.")
+    theme.references(["arps", "deferment"])
 
 
 def _anomaly_for(well_id: str, anomalies: list):
@@ -256,7 +261,7 @@ def _back_to_overview():
     target = globals().get("overview")
     try:
         st.page_link(target if target is not None else "app.py",
-                     label="← Back to Fleet overview", icon="📊")
+                     label="← Back to Fleet Overview", icon="📊")
     except Exception:
         pass
 
@@ -275,7 +280,24 @@ def render_overview() -> None:
     )
     theme.data_badge("synthetic", "Modeled daily SCADA fleet with known ground truth — public production is monthly, not daily.")
 
-    with st.expander(f"🆕 What's new in v{__version__}"):
+    theme.how_to(
+        "- **What this is** — a daily production digest over a Permian SCADA fleet: "
+        "fleet-wide rate trends, snapshot KPIs, an AI morning brief, the deferred-$ "
+        "offenders, the lost-production ledger, and a per-well drill-down.\n"
+        "- **Time range** — the segmented control (**7D · 30D · 3mo · 6mo · 1Y · "
+        "Lifetime**) re-slices every chart and KPI on the page to that trailing window.\n"
+        "- **Oil / Gas / Water tabs** — switch the fleet trend between total oil "
+        "(BOPD), gas (MCFD), and water (BWPD).\n"
+        "- **Fleet table + per-well pages** — the **📋 Fleet Table** tab is one sortable "
+        "row per well; open any well from the **Wells** section in the sidebar to drill "
+        "into its own production + SCADA-diagnostic charts and health note.\n"
+        "- **Data quality** — the **🧹 Data Quality** view flags the points a decline / "
+        "type-curve fit should exclude (shut-ins / zero-rate days, metering dropouts, "
+        "gross outliers) so they don't bias the trend — separate from the operational "
+        "**🚨 Anomalies** alerts."
+    )
+
+    with st.expander(f"🆕 What's New in v{__version__}"):
         st.markdown(
             "- **Representative-vs-anomalous data quality** — a new **🧹 Data quality** tab "
             "classifies which oil-rate points are usable for decline / type-curve trending "
@@ -301,17 +323,17 @@ def render_overview() -> None:
     totals = _fleet_daily_totals(fleet, window_days)
 
     # --- three fleet trend charts (Oil | Gas | Water) -----------------------
-    st.subheader("Fleet production trend")
+    st.subheader("Fleet Production Trend")
     t_oil, t_gas, t_water = st.tabs(["Oil (BOPD)", "Gas (MCFD)", "Water (BWPD)"])
     with t_oil:
         st.plotly_chart(_line(totals["date"], totals["oil"], "Oil", theme.BLUE,
-                              "Total BOPD", "Total fleet oil rate (BOPD)"), width="stretch")
+                              "Total BOPD", "Total Fleet Oil Rate (BOPD)"), width="stretch")
     with t_gas:
         st.plotly_chart(_line(totals["date"], totals["gas"], "Gas", theme.AMBER,
-                              "Total MCFD", "Total fleet gas rate (MCFD)"), width="stretch")
+                              "Total MCFD", "Total Fleet Gas Rate (MCFD)"), width="stretch")
     with t_water:
         st.plotly_chart(_line(totals["date"], totals["water"], "Water", theme.TEAL,
-                              "Total BWPD", "Total fleet water rate (BWPD)"), width="stretch")
+                              "Total BWPD", "Total Fleet Water Rate (BWPD)"), width="stretch")
 
     # --- fleet snapshot KPIs incl. production variance ----------------------
     summary = fleet_summary(fleet)
@@ -319,7 +341,7 @@ def render_overview() -> None:
     var_gas = production_variance_pct(totals["gas"].values)
     var_water = production_variance_pct(totals["water"].values)
 
-    st.subheader("Fleet snapshot")
+    st.subheader("Fleet Snapshot")
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Wells", summary["well_count"])
     k2.metric("Total BOPD", f"{summary['total_bopd']:,.0f}",
@@ -334,12 +356,16 @@ def render_overview() -> None:
     k6.metric("Avg runtime", f"{summary['avg_runtime_pct']:.1f}%")
     total_deferred = sum(a.deferred_usd_per_day for a in active)
     k7.metric("Deferred at risk", f"${total_deferred:,.0f}/day")
+    theme.source_note(
+        "Production variance % = (recent-edge avg − start-edge avg) / start-edge avg "
+        "over the selected window (7-day average at each end; positive = rising). "
+        "Deferred at risk sums each active anomaly's deferred-$ /day.")
 
     # --- brief + offenders + fleet table + data quality ---------------------
     BRIEFS_DIR.mkdir(exist_ok=True)
     tab_brief, tab_anom, tab_table, tab_quality = st.tabs(
-        ["📝 Morning brief", "🚨 Anomalies", "📋 Fleet table",
-         "🧹 Data quality"])
+        ["📝 Morning Brief", "🚨 Anomalies", "📋 Fleet Table",
+         "🧹 Data Quality"])
 
     with tab_brief:
         _brief_panel(fleet, anomalies)
@@ -424,7 +450,7 @@ def _anomaly_panel(anomalies: list, active: list) -> None:
             y=[a.well_id for a in offenders],
             orientation="h", marker_color=theme.RED,
         ))
-        fig_def.update_layout(title="Top deferred-$ offenders ($/day)",
+        fig_def.update_layout(title="Top Deferred-$ Offenders ($/day)",
                               xaxis_title="Deferred $/day")
         st.plotly_chart(theme.style_fig(fig_def, height=300, legend=False),
                         width="stretch")
@@ -436,6 +462,12 @@ def _anomaly_panel(anomalies: list, active: list) -> None:
         for a in anomalies
     ])
     st.dataframe(df, width="stretch", hide_index=True)
+    theme.source_note(
+        "Anomalies flagged by deterministic robust statistics on each well's own "
+        "recent baseline: a median/MAD robust z-score (robust_z = 0.6745·(x − median)"
+        "/MAD) plus a decline-aware rate-drop vs. the expected Arps rate — no fixed "
+        "thresholds, so a single bad day can't inflate the baseline.")
+    theme.references(["arps"])
 
 
 def _data_quality_panel(window_days: int | None) -> None:
@@ -471,18 +503,24 @@ def _data_quality_panel(window_days: int | None) -> None:
         x=worst["Representative %"], y=worst["Well"], orientation="h",
         marker_color=theme.BLUE,
         text=[f"{v:.0f}%" for v in worst["Representative %"]], textposition="auto"))
-    fig.update_layout(title="Representative data % by well (lowest first)",
+    fig.update_layout(title="Representative Data % by Well (lowest first)",
                       xaxis_title="Representative %", xaxis_range=[0, 100])
     st.plotly_chart(theme.style_fig(fig, height=340, legend=False), width="stretch")
+    theme.source_note(
+        "Representative % = share of a well's oil-rate points usable for a decline / "
+        "type-curve fit; the rest are excluded as shut-in / zero-rate days, metering "
+        "dropouts, or gross outliers (|robust z| > 4 vs. a decline-aware robust trend). "
+        "Fleet figure is the mean of that share across wells.")
 
     st.dataframe(rep.sort_values("Representative %"), width="stretch", hide_index=True)
     st.caption("Open a well in the **Wells** sidebar to see exactly which points are "
                "marked excluded on its decline chart.")
+    theme.references(["arps", "deferment"])
 
 
 def _ledger_section() -> None:
     st.divider()
-    st.subheader("📉 Lost-production ledger")
+    st.subheader("📉 Lost-Production Ledger")
     ledger, led_summary = _build_ledger_cached(str(DATA_DIR), str(ACK_PATH), 30)
 
     win_start = led_summary.get("window_start")
@@ -512,7 +550,7 @@ def _ledger_section() -> None:
             name="Cumulative deferred $", fill="tozeroy",
             line=dict(color=theme.RED, width=2), marker=dict(size=5),
             fillcolor="rgba(192,80,77,0.20)"))
-        fig_cum.update_layout(title="Cumulative deferred production ($) over window",
+        fig_cum.update_layout(title="Cumulative Deferred Production ($) Over Window",
                               yaxis_title="Cumulative deferred $")
         st.plotly_chart(theme.style_fig(fig_cum, height=300, legend=False), width="stretch")
 
@@ -522,11 +560,11 @@ def _ledger_section() -> None:
             fig_split.add_trace(go.Bar(
                 x=sub["date"], y=sub["deferred_usd"], name=cause,
                 marker_color=theme.COLORWAY[i % len(theme.COLORWAY)]))
-        fig_split.update_layout(barmode="stack", title="Deferred $ by cause (period split)",
+        fig_split.update_layout(barmode="stack", title="Deferred $ by Cause (period split)",
                                 yaxis_title="Deferred $/day")
         st.plotly_chart(theme.style_fig(fig_split, height=300), width="stretch")
 
-        with st.expander("Ledger detail (tidy: date · cause · bbl · $ · cumulative)"):
+        with st.expander("Ledger Detail (tidy: date · cause · bbl · $ · cumulative)"):
             st.dataframe(ledger, width="stretch", hide_index=True)
     else:
         st.info("No deferred-production events accrued in the trailing window on this fleet.")
@@ -537,6 +575,11 @@ def _ledger_section() -> None:
         "downtime-vs-underperformance waterfall, $-Pareto by cause, MTTR, capture-rate, and "
         "the recoverable-opportunity split. This ledger is the lightweight Monitor→Quantify "
         "upstream of that weekly VP review.")
+    theme.source_note(
+        "Deferred $ = (decline-aware potential − actual) × realized oil price, summed by "
+        "cause over the window; recoverable ≈ 65% (excludes the typically planned / "
+        "reservoir-driven share).")
+    theme.references(["arps", "deferment"])
 
 
 # =====================================================================
@@ -591,39 +634,39 @@ def render_well(well_id: str) -> None:
     # production graphs
     st.subheader("Production")
     p_oil, p_gas, p_water, p_wc = st.tabs(
-        ["Oil (BOPD)", "Gas (MCFD)", "Water (BWPD)", "Water cut %"])
+        ["Oil (BOPD)", "Gas (MCFD)", "Water (BWPD)", "Water Cut %"])
     with p_oil:
         _oil_with_representative(win)
     with p_gas:
         st.plotly_chart(_line(win["date"], win["gas_mcfd"], "Gas", theme.AMBER,
-                              "MCFD", "Gas rate (MCFD)"), width="stretch")
+                              "MCFD", "Gas Rate (MCFD)"), width="stretch")
     with p_water:
         st.plotly_chart(_line(win["date"], win["bfpd"] - win["bopd"], "Water", theme.TEAL,
-                              "BWPD", "Water rate (BWPD)"), width="stretch")
+                              "BWPD", "Water Rate (BWPD)"), width="stretch")
     with p_wc:
         wc = (win["bfpd"] - win["bopd"]) / win["bfpd"] * 100.0
         st.plotly_chart(_line(win["date"], wc, "Water cut", theme.GREY,
-                              "Water cut %", "Water cut trend (%)"), width="stretch")
+                              "Water cut %", "Water Cut Trend (%)"), width="stretch")
 
     # SCADA diagnostics
-    st.subheader("SCADA diagnostics")
+    st.subheader("SCADA Diagnostics")
     d_int, d_temp, d_amps, d_rt = st.tabs(
-        ["Intake psi", "Motor temp °F", "Motor amps", "Runtime %"])
+        ["Intake Psi", "Motor Temp °F", "Motor Amps", "Runtime %"])
     with d_int:
         st.plotly_chart(_line(win["date"], win["intake_pressure_psi"], "Intake",
-                              theme.PURPLE, "psi", "Intake pressure (psi)"), width="stretch")
+                              theme.PURPLE, "psi", "Intake Pressure (psi)"), width="stretch")
     with d_temp:
         st.plotly_chart(_line(win["date"], win["motor_temp_f"], "Temp", theme.RED,
-                              "°F", "Motor temperature (°F)"), width="stretch")
+                              "°F", "Motor Temperature (°F)"), width="stretch")
     with d_amps:
         st.plotly_chart(_line(win["date"], win["motor_amps"], "Amps", theme.GREEN,
-                              "A", "Motor amps (A)"), width="stretch")
+                              "A", "Motor Amps (A)"), width="stretch")
     with d_rt:
         st.plotly_chart(_line(win["date"], win["runtime_pct"], "Runtime", theme.BLUE,
                               "%", "Runtime (%)"), width="stretch")
 
     # health note: expected-vs-actual + any anomaly
-    st.subheader("Health note")
+    st.subheader("Health Note")
     _well_health_note(df, well_id, anomalies)
     _back_to_overview()
 
@@ -665,7 +708,7 @@ _bootstrap_fleet()
 
 _fleet = _load_fleet_cached(str(DATA_DIR))
 
-overview = st.Page(render_overview, title="Fleet overview", icon="📊", default=True)
+overview = st.Page(render_overview, title="Fleet Overview", icon="📊", default=True)
 wells = [
     st.Page(partial(render_well, wid), title=wid, url_path=wid)
     for wid in sorted(_fleet)
