@@ -197,6 +197,7 @@ def render_overview() -> None:
         chips=[(f"v{__version__}", "ver"), ("fleet explorer", "info"),
                ("scheduled agent", "info")],
     )
+    theme.data_badge("synthetic", "Modeled daily SCADA fleet with known ground truth — public production is monthly, not daily.")
 
     with st.expander(f"🆕 What's new in v{__version__}"):
         st.markdown(
@@ -429,6 +430,7 @@ def render_well(well_id: str) -> None:
         subtitle=f"{meta.lift} · {meta.basin} · {meta.formation} · {meta.area}",
         chips=[(f"v{__version__}", "ver"), (meta.peer_group, "info")],
     )
+    theme.data_badge("synthetic", "Modeled daily SCADA fleet with known ground truth — public production is monthly, not daily.")
     theme.well_cross_links("pe-digest", well_id)
     _back_to_overview()
 
