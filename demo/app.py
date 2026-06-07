@@ -77,9 +77,14 @@ def _load_fleet_cached(data_dir: str) -> dict:
     return load_fleet(data_dir)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def _scan_fleet_cached(data_dir: str, ack_path: str) -> list:
-    """Cache the deterministic fleet scan over the latest day per well."""
+    """Cache the deterministic fleet scan over the latest day per well.
+
+    Uses cache_resource (not cache_data) because it returns a list of `Anomaly`
+    dataclass objects — Streamlit's cache_data serializer rejects custom classes on
+    Python 3.14 / newer Streamlit. The scan result is read-only here, so sharing the
+    cached object across sessions is safe."""
     fleet = _load_fleet_cached(data_dir)
     acknowledged = load_acknowledgements(ack_path)
     return scan_fleet(fleet, acknowledged=acknowledged)
