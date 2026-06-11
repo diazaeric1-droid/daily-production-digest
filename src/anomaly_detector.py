@@ -254,7 +254,7 @@ def detect_intake_collapse(well_id: str, scada: pd.DataFrame) -> Anomaly | None:
     if "intake_pressure_psi" not in scada.columns or len(scada) < 5:
         return None
     last5 = scada.iloc[-5:]["intake_pressure_psi"].values
-    if last5[-1] >= 40:
+    if np.isnan(last5[-1]) or last5[-1] >= 40:
         return None
     # Falling trend (least-squares slope, not a noisy 2-point difference)
     slope = _slope_per_step(last5)
@@ -300,7 +300,7 @@ def detect_runtime_degradation(well_id: str, scada: pd.DataFrame) -> Anomaly | N
     if "runtime_pct" not in scada.columns or len(scada) < 1:
         return None
     last_day = scada.iloc[-1]["runtime_pct"]
-    if last_day >= 90:
+    if pd.isna(last_day) or last_day >= 90:
         return None
     severity = "HIGH" if last_day < 70 else "MEDIUM"
     return Anomaly(
@@ -319,7 +319,7 @@ def detect_amps_creep(well_id: str, scada: pd.DataFrame) -> Anomaly | None:
     # Least-squares slope over the 8-day window — the old first/last difference
     # was dominated by daily noise and missed real creep (and vice-versa).
     slope_per_day = _slope_per_step(window)
-    if slope_per_day < 0.3:
+    if np.isnan(slope_per_day) or slope_per_day < 0.3:
         return None
     return Anomaly(
         well_id=well_id, severity="MEDIUM", category="amps_creep",

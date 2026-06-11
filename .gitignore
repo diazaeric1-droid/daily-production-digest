@@ -10,6 +10,4 @@ build/
 *.egg-info/
 .streamlit/secrets.toml
 data/synthetic/fleet/
-briefs/*.md
-!briefs/sample.md
 .DS_Store

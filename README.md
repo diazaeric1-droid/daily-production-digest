@@ -15,11 +15,11 @@ license: mit
 
 Built by a Staff Production Engineer (ex-OXY, ex-Shell) who used to write this brief by hand at 6am every morning.
 
-[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen)](https://diazaeric1-daily-pe-digest.hf.space)
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen)](https://daily-pe-digest.streamlit.app)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
 
-**Try it now → [diazaeric1-daily-pe-digest.hf.space](https://diazaeric1-daily-pe-digest.hf.space)**
+**Try it now → [daily-pe-digest.streamlit.app](https://daily-pe-digest.streamlit.app)**
 
 ---
 
