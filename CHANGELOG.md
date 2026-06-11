@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] — 2026-06-11
+
+### Added
+- **BYOD — upload your own fleet SCADA CSV** — a new demo data-source option runs
+  the same scan + brief + ledger + data-quality path on a user's own fleet. One
+  uploaded CSV (schema: `well_id`, `date`, `bopd`, `bfpd`, `gas_mcfd`,
+  `intake_pressure_psi`, `motor_temp_f`, `motor_amps`, `runtime_pct`) is split by
+  `well_id` and run through the existing `load_well` loader (no parallel parser).
+  Columns are validated up front (`validate_scada_columns`); a missing/invalid file
+  shows a clear error and stops instead of crashing. Nothing is stored server-side
+  (parsed in memory only); a template CSV is downloadable.
+- **Event lifecycle surfaced in the UI** — a new *Ongoing Events* tab replays the
+  fleet's recent history through the persistent event state machine
+  (`NEW → ONGOING → RESOLVED`, the same path `scheduler.run` / the brief writer use,
+  in a per-session in-memory SQLite store) and renders the open + just-resolved
+  events with running **duration** and **cumulative deferred bbl/$** — matching the
+  brief. An "inject a demo outage" toggle splices a sustained multi-day rate outage
+  into one healthy well (in-memory only; committed fixtures untouched) so the
+  ONGOING lifecycle is visibly demonstrable on the single-day-fault demo fleet.
+
 ## [0.6.2] — 2026-06-11
 
 ### Fixed

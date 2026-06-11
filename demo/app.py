@@ -69,6 +69,13 @@ from src.data_loader import (
     slice_window,
     validate_scada_columns,
 )
+from src.event_store import (
+    NEW,
+    ONGOING,
+    RESOLVED,
+    EventStore,
+    update_events,
+)
 from src.ledger import build_ledger
 from src.representative import classify_representative
 
@@ -91,6 +98,21 @@ RANGE_OPTIONS: dict[str, int | None] = {
     "7D": 7, "30D": 30, "3mo": 90, "6mo": 180, "1Y": 365, "Lifetime": None,
 }
 DEFAULT_RANGE = "30D"
+
+# Event-lifecycle replay: how many trailing as-of days to push through the event
+# state machine (each day re-scans the whole fleet, ~18 ms/day, so this is bounded
+# for responsiveness; the recent window is where every multi-day signature lives).
+REPLAY_DAYS = 60
+
+# Demo-outage injection (Task B). The committed synthetic fleet injects faults only
+# on the FINAL day, so a replay alone won't show a clean multi-day ONGOING *rate*
+# event with a growing cumulative deferral. This optional toggle splices a sustained
+# rate outage into one otherwise-healthy well — held down (no recovery) over the tail
+# of the window — so the NEW→ONGOING lifecycle + cumulative deferred bbl/$ is visibly
+# demonstrable. It mutates only an in-memory copy; the committed CSVs are untouched.
+DEMO_OUTAGE_WELL = "well_001"     # a healthy (non-seeded) well in the demo fleet
+DEMO_OUTAGE_LEN = 12              # consecutive down days ending on the latest day
+DEMO_OUTAGE_FRACTION = 0.55       # held at ~55% of pre-event baseline (a ~45% loss)
 
 
 # ---- cached heavy loads (string tokens so they hash/cache cleanly) ----------
@@ -179,6 +201,84 @@ def _representative_fleet_cached(token: str, window_days: int | None) -> pd.Data
             "Top exclusion reason": top_reason,
         })
     return pd.DataFrame(rows)
+
+
+# ---- event state-machine replay (Ongoing & Resolved lifecycle) -------------
+
+def _inject_demo_outage(fleet: dict) -> dict:
+    """Return a shallow fleet copy with a sustained multi-day rate outage spliced
+    into ``DEMO_OUTAGE_WELL`` so the NEW→ONGOING lifecycle is demonstrable.
+
+    The committed synthetic fleet only injects faults on the FINAL day, so a raw
+    replay produces no clean multi-day ONGOING *rate* event. Here we hold the last
+    ``DEMO_OUTAGE_LEN`` days of one healthy well at ``DEMO_OUTAGE_FRACTION`` of its
+    pre-event baseline (and scale gas with it for physical consistency) — held down,
+    not recovered, so on the latest as-of day it reads ONGOING at ~day N with a
+    growing cumulative deferral. Only the in-memory copy is mutated; the committed
+    CSVs are never touched. A no-op if the target well isn't present (e.g. BYOD)."""
+    df = fleet.get(DEMO_OUTAGE_WELL)
+    if df is None or len(df) < DEMO_OUTAGE_LEN + 8:
+        return fleet
+    out = dict(fleet)
+    df2 = df.copy()
+    n = len(df2)
+    start = n - DEMO_OUTAGE_LEN
+    baseline = float(df2["bopd"].iloc[start - 7:start].mean())  # 7 days pre-event
+    target = baseline * DEMO_OUTAGE_FRACTION
+    idx = df2.index[start:]
+    df2.loc[idx, "bopd"] = target
+    if "gas_mcfd" in df2.columns and baseline > 0:
+        # Keep GOR roughly constant: drop gas in the same proportion as oil.
+        df2.loc[idx, "gas_mcfd"] = df2.loc[idx, "gas_mcfd"] * (target / baseline)
+    out[DEMO_OUTAGE_WELL] = df2
+    return out
+
+
+@st.cache_resource(show_spinner=False)
+def _replay_events_cached(token: str, ack_path: str, inject_demo: bool,
+                          replay_days: int = REPLAY_DAYS) -> list:
+    """Replay the fleet's recent history through the persistent event state machine
+    and return the live events on the latest as-of day (NEW / ONGOING / RESOLVED).
+
+    This is the SAME code path ``scheduler.run`` / the brief writer drive: each
+    trailing as-of day, in order, is pushed through ``update_events`` against an
+    in-memory ``EventStore`` so events open (NEW), persist (ONGOING) even after the
+    stateless scan goes quiet, and resolve (RESOLVED) on recovery. The store is
+    ``:memory:`` and per-call, so the demo is stateless across users and writes
+    nothing into the repo. Cached on (token, inject_demo) so it doesn't recompute
+    every rerun.
+
+    Returns the same money-first event list ``render_brief_markdown`` consumes, so
+    the table matches the brief's *Ongoing & Resolved Events* section. Uses
+    cache_resource (not cache_data) because the value is a list of ``Event``
+    dataclasses, read-only here — the same rationale as ``_scan_fleet_cached``."""
+    fleet = _fleet_for_token(token)
+    if inject_demo:
+        fleet = _inject_demo_outage(fleet)
+    acknowledged = load_acknowledgements(ack_path)
+
+    # A shared calendar spine: the union of well dates, ascending. The synthetic
+    # fleet shares one spine; for ragged BYOD we still iterate the global tail.
+    all_dates = sorted({d for df in fleet.values() if df is not None and len(df)
+                        for d in df["date"]})
+    if not all_dates:
+        return []
+    spine = all_dates[-replay_days:] if replay_days and replay_days > 0 else all_dates
+
+    store = EventStore(":memory:")
+    live: list = []
+    try:
+        for as_of_ts in spine:
+            as_of = pd.Timestamp(as_of_ts).date().isoformat()
+            # Feed each well its history UP TO as_of (history-to-date), exactly like
+            # backtest_v2 / scheduler across consecutive mornings.
+            sliced = {wid: df[df["date"] <= as_of_ts]
+                      for wid, df in fleet.items() if df is not None and len(df)}
+            sliced = {wid: d for wid, d in sliced.items() if len(d)}
+            live = update_events(store, sliced, as_of=as_of, acknowledged=acknowledged)
+    finally:
+        store.close()
+    return live
 
 
 def _bootstrap_fleet() -> None:
@@ -437,19 +537,24 @@ def render_overview() -> None:
 
     with st.expander(f"🆕 What's New in v{__version__}"):
         st.markdown(
-            "- **Representative-vs-anomalous data quality** — a new **🧹 Data quality** tab "
+            "- **Upload your own fleet SCADA** — the **Data source** control in the "
+            "sidebar now takes a fleet SCADA CSV (`well_id`, `date`, oil/gas/water "
+            "rates + ESP diagnostics) and runs the **same** scan, brief, ledger, and "
+            "event lifecycle on your data. Columns are validated up front; nothing is "
+            "stored server-side (parsed in memory only) and a template is downloadable.\n"
+            "- **Ongoing Events tab** — replays the fleet's recent history through the "
+            "persistent event state machine (`NEW → ONGOING → RESOLVED`, the same path "
+            "the morning brief + scheduler drive) so a confirmed multi-day outage stays "
+            "**ONGOING** with a running **duration** + **cumulative deferred bbl/$** "
+            "instead of vanishing once it ages out of the detector's window.\n"
+            "- **Representative-vs-anomalous data quality** — the **🧹 Data quality** tab "
             "classifies which oil-rate points are usable for decline / type-curve trending "
             "vs which to exclude (shut-ins / zero days, metering dropouts, gross outliers); "
-            "per-well oil charts now mark the **excluded** points. The pre-trending cleaning "
-            "step, distinct from the operational **Anomalies** alerts.\n"
+            "per-well oil charts mark the **excluded** points.\n"
             "- **Fleet explorer (multipage)** — a Fleet Overview plus a **drill-down page "
-            "per well** (`st.navigation`), each with its own production + SCADA-diagnostic "
-            "charts and a health note.\n"
-            "- **Gas channel** — every well carries **`gas_mcfd`** (GOR-correlated to oil) "
-            "and **~400 days** of history, so the **time-range toggle** (7D · 30D · 3mo · 6mo · "
-            "1Y · Lifetime) is meaningful.\n"
-            "- **Oil / Gas / Water fleet trends**, a **production-variance** KPI, a **sortable "
-            "fleet table**, and the **lost-production ledger** — all retained."
+            "per well**, each with its own production + SCADA-diagnostic charts; **Oil / "
+            "Gas / Water** fleet trends, a **production-variance** KPI, a **sortable fleet "
+            "table**, and the **lost-production ledger** — all retained."
         )
 
     fleet = _fleet_for_token(token)
@@ -499,10 +604,10 @@ def render_overview() -> None:
         "over the selected window (7-day average at each end; positive = rising). "
         "Deferred at risk sums each active anomaly's deferred-$ /day.")
 
-    # --- brief + offenders + fleet table + data quality ---------------------
+    # --- brief + offenders + ongoing events + fleet table + data quality ----
     BRIEFS_DIR.mkdir(exist_ok=True)
-    tab_brief, tab_anom, tab_table, tab_quality = st.tabs(
-        ["📝 Morning Brief", "🚨 Anomalies", "📋 Fleet Table",
+    tab_brief, tab_anom, tab_events, tab_table, tab_quality = st.tabs(
+        ["📝 Morning Brief", "🚨 Anomalies", "🔁 Ongoing Events", "📋 Fleet Table",
          "🧹 Data Quality"])
 
     with tab_brief:
@@ -510,6 +615,9 @@ def render_overview() -> None:
 
     with tab_anom:
         _anomaly_panel(anomalies, active)
+
+    with tab_events:
+        _events_panel(token, is_byod)
 
     with tab_table:
         st.caption("One row per well over the selected window — sort any column. "
@@ -657,6 +765,111 @@ def _data_quality_panel(token: str, window_days: int | None) -> None:
     st.dataframe(rep.sort_values("Representative %"), width="stretch", hide_index=True)
     st.caption("Open a well in the **Wells** sidebar to see exactly which points are "
                "marked excluded on its decline chart.")
+    theme.references(["arps", "deferment"])
+
+
+def _events_panel(token: str, is_byod: bool) -> None:
+    """Ongoing & Resolved Events — the persistent state machine surfaced in the UI.
+
+    Replays the fleet's recent history through the SAME event store the morning
+    brief + scheduler drive (NEW→ONGOING→RESOLVED), then renders the open and
+    just-resolved events with running duration + cumulative deferred bbl/$ — the
+    table that matches the brief's *Ongoing & Resolved Events* section. This is the
+    lifecycle the stateless Anomalies tab can't show: a confirmed outage that
+    persists as ONGOING every day instead of vanishing once it ages out of the
+    detector's lookback window."""
+    st.caption(
+        "The **Anomalies** tab is a point-in-time scan of the latest day. This view "
+        "adds **memory**: the fleet's recent history is replayed through the "
+        "persistent event state machine (`NEW → ONGOING → RESOLVED`) — the same path "
+        "the morning brief and the scheduler run — so a confirmed multi-day outage "
+        "stays **ONGOING** with a running duration and **cumulative** deferred bbl/$ "
+        "instead of dropping off once it ages into the rolling baseline. The replay "
+        "runs in an in-memory store (nothing persisted).")
+
+    # The committed synthetic fleet injects faults only on the final day, so there's
+    # no clean multi-day ONGOING *rate* event to show. This toggle splices a
+    # sustained outage into one healthy well to make the lifecycle demonstrable.
+    inject_demo = False
+    if not is_byod:
+        inject_demo = st.toggle(
+            "Inject a demo outage (multi-day ONGOING rate event)", value=True,
+            key="inject_demo_outage",
+            help=f"Holds the last {DEMO_OUTAGE_LEN} days of {DEMO_OUTAGE_WELL} at "
+                 f"~{DEMO_OUTAGE_FRACTION:.0%} of its pre-event baseline so it reads "
+                 "ONGOING with a growing cumulative deferral. The committed fleet "
+                 "only injects faults on the final day; this mutates an in-memory "
+                 "copy only — the committed CSVs and fixtures are untouched.")
+        if inject_demo:
+            st.caption(f"Demo outage active on **{DEMO_OUTAGE_WELL}** — a sustained "
+                       f"~{1 - DEMO_OUTAGE_FRACTION:.0%} rate loss held over the last "
+                       f"{DEMO_OUTAGE_LEN} days (no recovery), so it stays ONGOING.")
+    else:
+        st.caption("Replaying your uploaded fleet's history — any multi-day outage in "
+                   "your data will surface here as an ONGOING event.")
+
+    events = _replay_events_cached(token, str(ACK_PATH), inject_demo)
+    open_evts = [e for e in events if e.state in (NEW, ONGOING)]
+    resolved = [e for e in events if e.state == RESOLVED]
+    multi_day = [e for e in open_evts if e.duration_days > 1]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Open events (NEW/ONGOING)", len(open_evts))
+    c2.metric("Multi-day ONGOING", len(multi_day),
+              help="Open events past their first day — the lifecycle a point-in-time "
+                   "scan can't keep visible.")
+    c3.metric("Cumulative deferred (open)",
+              f"${sum(e.deferred_usd for e in open_evts):,.0f}",
+              help="Sum of cumulative deferred $ across open events over their life.")
+
+    if not open_evts and not resolved:
+        st.success("No open or recently-resolved events on the replayed history.")
+        theme.references(["arps", "deferment"])
+        return
+
+    if open_evts:
+        rows = []
+        for e in sorted(open_evts, key=lambda e: (-e.deferred_usd, e.well_id)):
+            rows.append({
+                "Well": e.well_id,
+                "Event type": e.event_type,
+                "State": e.state,
+                "Start date": e.start_date,
+                "Duration (days)": e.duration_days,
+                "Cumulative deferred bbl": round(e.deferred_bopd, 0) if e.deferred_bopd else 0,
+                "Cumulative deferred $": round(e.deferred_usd, 0) if e.deferred_usd else 0,
+                "Today's deferral $": round(e.last_deferred_usd, 0) if e.last_deferred_usd else 0,
+                "Ack": "🔕" if e.acknowledged else "",
+            })
+        ev_df = pd.DataFrame(rows)
+        st.dataframe(
+            ev_df, width="stretch", hide_index=True,
+            column_config={
+                "Cumulative deferred $": st.column_config.NumberColumn(format="$%d"),
+                "Cumulative deferred bbl": st.column_config.NumberColumn(format="%d"),
+                "Today's deferral $": st.column_config.NumberColumn(format="$%d"),
+                "Duration (days)": st.column_config.NumberColumn(format="%d d"),
+            })
+        st.download_button(
+            "⬇ Download open events (CSV)", data=ev_df.to_csv(index=False),
+            file_name="digest_open_events.csv", mime="text/csv")
+    else:
+        st.info("No open (NEW/ONGOING) events on the replayed history.")
+
+    if resolved:
+        st.markdown("**Recently resolved (closing out):**")
+        for e in resolved:
+            span = f"{e.duration_days}-day" if e.duration_days > 1 else "1-day"
+            cum = (f" — ~{e.deferred_bopd:,.0f} bbl (${e.deferred_usd:,.0f}) deferred "
+                   "over the event" if e.deferred_bopd > 0 else "")
+            st.markdown(f"- ✅ **{e.well_id}** ({e.event_type}) — {span} event RESOLVED{cum}.")
+
+    theme.source_note(
+        "Events are replayed through the persistent state machine "
+        "(`src.event_store`): a rate event opened from a confirmed drop stays "
+        "ONGOING while production holds below its pre-event baseline (accruing "
+        "cumulative deferred bbl/$ = baseline − current × oil price) and RESOLVES on "
+        "recovery into band — the same lifecycle the morning brief reports.")
     theme.references(["arps", "deferment"])
 
 
