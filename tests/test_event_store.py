@@ -19,7 +19,6 @@ from src.event_store import (
     ONGOING,
     RESOLVED,
     POST_RESOLUTION_DAYS,
-    Event,
     EventStore,
     update_events,
 )

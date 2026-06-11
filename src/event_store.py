@@ -53,11 +53,10 @@ remembers what the stateless scan forgets.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from .anomaly_detector import Anomaly, DEFAULT_OIL_PRICE, scan_fleet
