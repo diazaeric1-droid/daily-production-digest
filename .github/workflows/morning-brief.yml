@@ -40,7 +40,7 @@ jobs:
       - name: Notify Slack on HIGH-priority anomalies
         # Optional: only runs if a SLACK_WEBHOOK_URL secret is configured. Posts the
         # brief's "Top Priorities" section so the asset team sees HIGH items in-channel.
-        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
