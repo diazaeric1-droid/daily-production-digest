@@ -1,6 +1,6 @@
 [project]
 name = "daily-production-digest"
-version = "0.6.1"
+version = "0.6.2"
 description = "Scheduled AI agent that writes a daily production brief for asset teams"
 readme = "README.md"
 requires-python = ">=3.11"

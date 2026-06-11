@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] — 2026-06-11
+
+### Fixed
+- **Confirmed outages no longer vanish after ~3 days** — the detectors are
+  stateless (they only see the recent trailing window), so a sustained outage fired
+  `NEW` for a day or two and then silently disappeared once the dropped production
+  level aged into the rolling baseline (the baseline absorbed the new, lower level
+  and "today vs baseline" looked normal again). A real 10-day outage vanished on
+  ~day 4. Added a **persistent event state machine** (`src/event_store.py`):
+  `NEW → ONGOING → RESOLVED → (dropped after a short post-resolution mention)`,
+  keyed by `(well_id, event_type, start_date)` in a stdlib-`sqlite3` `events` table
+  (same pattern as `src.sources.SQLiteFleetSource`). For rate-loss events the
+  **pre-event baseline** is captured at open time; on later days, even when
+  `scan_fleet` goes quiet, if today's rate is still below the recovery band of that
+  baseline the event stays **ONGOING** and keeps accruing **cumulative deferred
+  bbl/$**. Recovery into band RESOLVES it; non-rate events resolve after a
+  clean-poll grace period. Processing a given as-of day is **idempotent** (re-runs
+  never double-count). The morning brief now shows ongoing events with their
+  running **duration** + cumulative deferral (`render_brief_markdown` / `write_brief`
+  gain an optional `events` arg — no events means a byte-identical brief);
+  `scheduler.run` drives the machine each day. **Acknowledge/suppress** and the
+  money-first deferred-$ ranking are preserved.
+
+### Added
+- **Backtest v2 — event-lifecycle metrics** (`src/backtest_v2.py`,
+  `python -m src.backtest_v2`). Replays the state machine day-by-day over a fleet
+  with **injected multi-day outages of known start/end** and scores **event-level
+  precision/recall**, **duration accuracy** (open→resolved span vs injected span),
+  **detection latency** (onset→`NEW`), and the **persistence regression** (an
+  injected 10-day outage must be `ONGOING` on day 5, not gone on day 4). Keeps
+  near-threshold decoys — two clean negatives the detector rejects (sub-threshold
+  dip; smooth steep decliner the decline-aware rule passes) and one spurious
+  positive (a metering-recal step) — so event precision is a real **0.80**, not a
+  trivial 1.0. On the injected fleet: precision **0.80** (TP=4/FP=1/FN=0), recall
+  **1.00**, F1 **0.89**, duration MAE **0.00 d**, mean latency **0.00 d**; the
+  committed metrics snapshot is `data/backtest_v2_metrics.json`.
+
 ## [0.6.1] — 2026-06-07
 ### Fixed
 - **Time-range toggle stuck on 30D** — `st.segmented_control` was created with both `default=` and `key=` (the default re-asserted on rerun and snapped the selection back). It now owns its selection in `session_state`, so **7D/30D/3mo/6mo/1Y/Lifetime** re-slice every chart + KPI (verified via AppTest).
