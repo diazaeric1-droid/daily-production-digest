@@ -59,11 +59,15 @@ from src.anomaly_detector import (
     scan_fleet,
 )
 from src.data_loader import (
+    BYOD_REQUIRED_COLUMNS,
     build_fleet_table,
     fleet_summary,
+    fleet_template_csv,
     load_fleet,
+    load_fleet_from_csv,
     production_variance_pct,
     slice_window,
+    validate_scada_columns,
 )
 from src.ledger import build_ledger
 from src.representative import classify_representative
@@ -73,6 +77,15 @@ DATA_DIR = REPO_ROOT / "data" / "synthetic" / "fleet"
 BRIEFS_DIR = REPO_ROOT / "briefs"
 ACK_PATH = REPO_ROOT / "acknowledged.yml"
 
+# Data-source selector (sidebar). Synthetic (the committed demo fleet) is default;
+# the BYOD option lets a user drop their own fleet SCADA CSV — same scan + brief.
+SRC_SYNTHETIC = "Synthetic demo fleet"
+SRC_UPLOAD = "Upload your own fleet SCADA CSV"
+
+# Token used to key the cached heavy loads for the synthetic source (the on-disk
+# fleet dir). The BYOD source keys on a content hash instead (see _resolve_fleet).
+SYNTHETIC_TOKEN = f"synthetic::{DATA_DIR}"
+
 # Time-range control: label -> trailing-window length in days (None = Lifetime).
 RANGE_OPTIONS: dict[str, int | None] = {
     "7D": 7, "30D": 30, "3mo": 90, "6mo": 180, "1Y": 365, "Lifetime": None,
@@ -80,7 +93,36 @@ RANGE_OPTIONS: dict[str, int | None] = {
 DEFAULT_RANGE = "30D"
 
 
-# ---- cached heavy loads (string args so they hash/cache cleanly) -----------
+# ---- cached heavy loads (string tokens so they hash/cache cleanly) ----------
+# Every heavy load is keyed on a string ``token`` that identifies the data source:
+# the synthetic on-disk fleet (``SYNTHETIC_TOKEN``) or a bring-your-own-data upload
+# (``byod::<sha1>``). The uploaded CSV bytes are stashed in session_state under that
+# token so the cached parse below is a pure function of the token — nothing about
+# the upload is written into the repo, and each distinct upload caches separately.
+
+_BYOD_BYTES: dict[str, bytes] = {}  # token -> uploaded CSV bytes (process-local)
+
+
+@st.cache_data(show_spinner=False)
+def _byod_fleet_cached(token: str) -> dict:
+    """Parse an uploaded fleet CSV (looked up by ``token``) via the EXISTING loader.
+
+    Reuses ``load_fleet_from_csv`` — same schema check + per-well date parse/sort as
+    the on-disk synthetic loader — so detection / scan / brief see identical frames.
+    Cached on the token (a content hash) so a re-run doesn't re-parse."""
+    import io
+    data = _BYOD_BYTES.get(token)
+    if data is None:  # cache survived but the bytes did not (rare warm-container case)
+        raise KeyError("uploaded data is no longer in memory — please re-upload")
+    return load_fleet_from_csv(io.BytesIO(data))
+
+
+def _fleet_for_token(token: str) -> dict:
+    """Resolve a source token to a fleet dict (synthetic dir-load or BYOD parse)."""
+    if token.startswith("byod::"):
+        return _byod_fleet_cached(token)
+    return _load_fleet_cached(str(DATA_DIR))
+
 
 @st.cache_data(show_spinner=False)
 def _load_fleet_cached(data_dir: str) -> dict:
@@ -89,34 +131,34 @@ def _load_fleet_cached(data_dir: str) -> dict:
 
 
 @st.cache_resource(show_spinner=False)
-def _scan_fleet_cached(data_dir: str, ack_path: str) -> list:
+def _scan_fleet_cached(token: str, ack_path: str) -> list:
     """Cache the deterministic fleet scan over the latest day per well.
 
     Uses cache_resource (not cache_data) because it returns a list of `Anomaly`
     dataclass objects — Streamlit's cache_data serializer rejects custom classes on
     Python 3.14 / newer Streamlit. The scan result is read-only here, so sharing the
     cached object across sessions is safe."""
-    fleet = _load_fleet_cached(data_dir)
+    fleet = _fleet_for_token(token)
     acknowledged = load_acknowledgements(ack_path)
     return scan_fleet(fleet, acknowledged=acknowledged)
 
 
 @st.cache_data(show_spinner=False)
-def _build_ledger_cached(data_dir: str, ack_path: str, window_days: int = 30):
+def _build_ledger_cached(token: str, ack_path: str, window_days: int = 30):
     """Cache the day-by-day ledger replay over a trailing window."""
-    fleet = _load_fleet_cached(data_dir)
+    fleet = _fleet_for_token(token)
     acknowledged = load_acknowledgements(ack_path)
     return build_ledger(fleet, window_days=window_days, acknowledged=acknowledged)
 
 
 @st.cache_data(show_spinner=False)
-def _representative_fleet_cached(data_dir: str, window_days: int | None) -> pd.DataFrame:
+def _representative_fleet_cached(token: str, window_days: int | None) -> pd.DataFrame:
     """Per-well representative-vs-anomalous data-quality summary over the window.
 
     For each well, classify which oil-rate points are representative for decline /
     type-curve trending (vs shut-ins / zero days, metering dropouts, gross outliers)
     and report the representative share + excluded count. Deterministic, no API key."""
-    fleet = _load_fleet_cached(data_dir)
+    fleet = _fleet_for_token(token)
     rows = []
     for well_id in sorted(fleet):
         df = fleet[well_id]
@@ -156,6 +198,87 @@ def _bootstrap_fleet() -> None:
                 [sys.executable, str(REPO_ROOT / "data" / "synthetic" / "generate_fleet.py")],
                 check=True,
             )
+
+
+# ---- data-source selection (synthetic vs bring-your-own SCADA) -------------
+
+def _byod_caption() -> None:
+    """Document the BYOD schema + the privacy guarantee, with a template download."""
+    st.caption(
+        "**Required columns** (one row per well per day): "
+        f"`{'`, `'.join(BYOD_REQUIRED_COLUMNS)}`. "
+        "`date` is YYYY-MM-DD; `well_id` groups rows into wells; rates are daily "
+        "(`bopd` oil, `bfpd` gross fluid, `gas_mcfd` gas), plus ESP/well diagnostics "
+        "(`intake_pressure_psi`, `motor_temp_f`, `motor_amps`, `runtime_pct`). "
+        "Extra columns are ignored. **Nothing is stored server-side** — the file is "
+        "parsed in memory for this session only and never written to disk or logged.")
+    st.download_button(
+        "⬇ Download a template CSV", data=fleet_template_csv(),
+        file_name="fleet_scada_template.csv", mime="text/csv",
+        help="A header row in the required schema + two example daily rows for one well.")
+
+
+def _resolve_fleet() -> tuple[str, bool]:
+    """Render the sidebar data-source control and return ``(token, is_byod)``.
+
+    Synthetic → the committed demo fleet (``SYNTHETIC_TOKEN``). BYOD → the user's
+    uploaded fleet SCADA CSV, validated up front against ``BYOD_REQUIRED_COLUMNS``;
+    on a missing/invalid file we show a clear ``st.error`` and ``st.stop()`` (never
+    crash). The valid upload's bytes are cached under a content-hash token so every
+    cached load (scan / ledger / events / data-quality) runs the SAME path as the
+    synthetic source — only the source token differs.
+    """
+    with st.sidebar:
+        st.header("Data source")
+        source = st.radio(
+            "Fleet SCADA source", [SRC_SYNTHETIC, SRC_UPLOAD], index=0,
+            key="data_source",
+            help="Synthetic = the committed modeled Permian fleet (known ground "
+                 "truth). Upload your own = drop a fleet SCADA CSV in the schema "
+                 "below and get the same scan, brief, ledger, and event lifecycle "
+                 "on your data. Nothing is stored server-side.")
+        if source != SRC_UPLOAD:
+            return SYNTHETIC_TOKEN, False
+
+        uploaded = st.file_uploader("Fleet SCADA CSV", type=["csv"], key="byod_csv")
+        _byod_caption()
+
+    if uploaded is None:
+        st.info("Upload a fleet SCADA CSV to analyze your own wells, or switch the "
+                "**Data source** back to the synthetic demo fleet in the sidebar.")
+        st.stop()
+
+    # Validate columns up front against the raw header — a clear error beats a parse
+    # traceback. Read once; reuse the bytes for both the check and the cached parse.
+    import hashlib
+    import io
+    data = uploaded.getvalue()
+    try:
+        head = pd.read_csv(io.BytesIO(data), nrows=0)
+    except Exception as exc:
+        st.error(f"Could not read that file as CSV: {exc}")
+        st.stop()
+    missing = validate_scada_columns(head)
+    if missing:
+        st.error(
+            "Uploaded CSV is missing required column(s): "
+            f"**{', '.join(missing)}**.\n\nRequired columns are: "
+            f"`{'`, `'.join(BYOD_REQUIRED_COLUMNS)}`. "
+            "Download the template above for the exact schema.")
+        st.stop()
+
+    token = f"byod::{hashlib.sha1(data).hexdigest()}"
+    _BYOD_BYTES[token] = data
+    # Surface any per-well parse problem (e.g. an unparseable date) as a clean error.
+    try:
+        fleet = _byod_fleet_cached(token)
+    except Exception as exc:
+        st.error(f"Could not load the uploaded fleet: {exc}")
+        st.stop()
+    if not fleet:
+        st.error("No wells found in the uploaded CSV — check the `well_id` column.")
+        st.stop()
+    return token, True
 
 
 # ---- shared helpers --------------------------------------------------------
@@ -281,14 +404,19 @@ def _back_to_overview():
 # =====================================================================
 
 def render_overview() -> None:
+    token, is_byod = _resolve_fleet()
+    src_chip = ("your fleet · uploaded", "info") if is_byod else ("synthetic", "info")
     theme.header(
         "Daily Production Digest",
         subtitle="Scheduled AI agent that writes a morning brief for asset teams. "
                  "Built by an ex-OXY / ex-Shell Staff PE.",
-        chips=[(f"v{__version__}", "ver"), ("fleet explorer", "info"),
-               ("scheduled agent", "info")],
+        chips=[(f"v{__version__}", "ver"), src_chip, ("scheduled agent", "info")],
     )
-    theme.data_badge("synthetic", "Modeled daily SCADA fleet with known ground truth — public production is monthly, not daily.")
+    if is_byod:
+        theme.data_badge("real", "Your uploaded fleet SCADA — parsed in memory for this "
+                                 "session only, nothing stored server-side.")
+    else:
+        theme.data_badge("synthetic", "Modeled daily SCADA fleet with known ground truth — public production is monthly, not daily.")
 
     theme.how_to(
         "- **What this is** — a daily production digest over a Permian SCADA fleet: "
@@ -324,8 +452,8 @@ def render_overview() -> None:
             "fleet table**, and the **lost-production ledger** — all retained."
         )
 
-    fleet = _load_fleet_cached(str(DATA_DIR))
-    anomalies = _scan_fleet_cached(str(DATA_DIR), str(ACK_PATH))
+    fleet = _fleet_for_token(token)
+    anomalies = _scan_fleet_cached(token, str(ACK_PATH))
     active = [a for a in anomalies if not a.acknowledged]
     anomaly_map = {a.well_id: f"{a.severity} · {a.category}" for a in active}
 
@@ -393,10 +521,10 @@ def render_overview() -> None:
                            file_name="digest_fleet.csv", mime="text/csv")
 
     with tab_quality:
-        _data_quality_panel(window_days)
+        _data_quality_panel(token, window_days)
 
     # --- lost-production ledger ---------------------------------------------
-    _ledger_section()
+    _ledger_section(token)
 
 
 def _brief_panel(fleet: dict, anomalies: list) -> None:
@@ -484,7 +612,7 @@ def _anomaly_panel(anomalies: list, active: list) -> None:
     theme.references(["arps"])
 
 
-def _data_quality_panel(window_days: int | None) -> None:
+def _data_quality_panel(token: str, window_days: int | None) -> None:
     """Representative-vs-anomalous data-quality view: which points each well's
     decline/type-curve trending should be fit on, and which to EXCLUDE (shut-ins /
     zero days, metering dropouts, gross outliers vs a robust decline-aware trend).
@@ -499,7 +627,7 @@ def _data_quality_panel(window_days: int | None) -> None:
         "trend). This filters non-representative points so they don't bias the trend — "
         "separate from the operational alerts in the **Anomalies** tab.")
 
-    rep = _representative_fleet_cached(str(DATA_DIR), window_days)
+    rep = _representative_fleet_cached(token, window_days)
     if rep.empty:
         st.info("No wells with a scannable rate history in the selected window.")
         return
@@ -532,10 +660,10 @@ def _data_quality_panel(window_days: int | None) -> None:
     theme.references(["arps", "deferment"])
 
 
-def _ledger_section() -> None:
+def _ledger_section(token: str) -> None:
     st.divider()
     st.subheader("📉 Lost-Production Ledger")
-    ledger, led_summary = _build_ledger_cached(str(DATA_DIR), str(ACK_PATH), 30)
+    ledger, led_summary = _build_ledger_cached(token, str(ACK_PATH), 30)
 
     win_start = led_summary.get("window_start")
     win_end = led_summary.get("window_end")
@@ -601,22 +729,37 @@ def _ledger_section() -> None:
 # =====================================================================
 
 def render_well(well_id: str) -> None:
-    fleet = _load_fleet_cached(str(DATA_DIR))
-    anomalies = _scan_fleet_cached(str(DATA_DIR), str(ACK_PATH))
+    token, is_byod = _resolve_fleet()
+    fleet = _fleet_for_token(token)
+    anomalies = _scan_fleet_cached(token, str(ACK_PATH))
     meta = fleet_registry.get(well_id)
     df = fleet.get(well_id)
 
+    src_chip = ("your fleet · uploaded", "info") if is_byod else (meta.peer_group, "info")
     theme.header(
         f"{well_id} · {meta.name}",
         subtitle=f"{meta.lift} · {meta.basin} · {meta.formation} · {meta.area}",
-        chips=[(f"v{__version__}", "ver"), (meta.peer_group, "info")],
+        chips=[(f"v{__version__}", "ver"), src_chip],
     )
-    theme.data_badge("synthetic", "Modeled daily SCADA fleet with known ground truth — public production is monthly, not daily.")
+    if is_byod:
+        theme.data_badge("real", "Your uploaded fleet SCADA — parsed in memory for this "
+                                 "session only, nothing stored server-side.")
+    else:
+        theme.data_badge("synthetic", "Modeled daily SCADA fleet with known ground truth — public production is monthly, not daily.")
     theme.well_cross_links("pe-digest", well_id)
     _back_to_overview()
 
     if df is None or not len(df):
-        st.warning("No SCADA history for this well.")
+        if is_byod:
+            st.info(
+                f"**{well_id}** isn't in your uploaded fleet. The per-well menu in the "
+                "sidebar is keyed to the synthetic demo wells (`well_NNN`); your wells "
+                "are listed in the **Fleet Table** on the Fleet Overview. Open the "
+                "**Fleet Overview** to see them, or switch the **Data source** back to "
+                "the synthetic demo fleet to drill into this well.")
+        else:
+            st.warning("No SCADA history for this well.")
+        _back_to_overview()
         return
 
     window_days = _time_range_control(well_id)

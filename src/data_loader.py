@@ -2,6 +2,7 @@
 this with a connector to PI / Ignition / OSIsoft / SQL data historians."""
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,26 @@ import pandas as pd
 
 
 SCADA_COLUMNS = ["date", "bopd", "bfpd", "gas_mcfd", "intake_pressure_psi", "motor_temp_f", "motor_amps", "runtime_pct"]
+
+# Bring-your-own-data: a single uploaded CSV carries the WHOLE fleet, so it needs a
+# ``well_id`` column to split rows into per-well frames (the on-disk synthetic fleet
+# encodes the id in the filename instead). Everything else is the standard SCADA
+# channel set the detectors + brief already consume.
+BYOD_REQUIRED_COLUMNS = ["well_id", *SCADA_COLUMNS]
+
+
+def validate_scada_columns(df: pd.DataFrame) -> list[str]:
+    """Return the BYOD-required columns missing from ``df`` (empty list == valid).
+
+    Small, Streamlit-free helper so an uploaded CSV can be checked up front and a
+    clear error shown before anything tries to parse it. Required columns are
+    ``well_id`` + the SCADA channels in :data:`BYOD_REQUIRED_COLUMNS`; order does
+    not matter (set difference), extra columns are ignored. Missing columns are
+    returned in canonical order so the error message reads consistently."""
+    if df is None:
+        return list(BYOD_REQUIRED_COLUMNS)
+    have = set(df.columns)
+    return [c for c in BYOD_REQUIRED_COLUMNS if c not in have]
 
 
 def load_well(path: str | Path) -> pd.DataFrame:
@@ -25,6 +46,48 @@ def load_fleet(data_dir: str | Path) -> dict[str, pd.DataFrame]:
     for csv in sorted(data_dir.glob("well_*.csv")):
         fleet[csv.stem] = load_well(csv)
     return fleet
+
+
+def load_fleet_from_csv(path: str | Path) -> dict[str, pd.DataFrame]:
+    """Load a fleet from a SINGLE uploaded CSV that carries a ``well_id`` column.
+
+    This is the bring-your-own-data path: one file holds every well's daily SCADA.
+    Validates the columns up front (raises ``ValueError`` listing what's missing),
+    then splits by ``well_id`` and runs each well's rows through the EXACT same
+    on-disk loader the synthetic source uses (``load_well`` via a per-well temp
+    CSV) — same date parsing, sort, and schema check — so detection / scan / brief
+    all see identically-shaped frames regardless of source. Well ids are coerced to
+    ``str`` to match the synthetic ``well_NNN`` keys.
+    """
+    df = pd.read_csv(path)
+    missing = validate_scada_columns(df)
+    if missing:
+        raise ValueError(f"uploaded CSV missing required columns: {missing}")
+
+    fleet: dict[str, pd.DataFrame] = {}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for raw_id, group in df.groupby("well_id", sort=True):
+            well_id = str(raw_id)
+            tmp = Path(tmpdir) / "well.csv"
+            # Drop the id column so the per-well frame matches the on-disk schema
+            # (SCADA_COLUMNS only), then reuse load_well for parse + sort + validate.
+            group.drop(columns=["well_id"]).to_csv(tmp, index=False)
+            fleet[well_id] = load_well(tmp)
+    return fleet
+
+
+def fleet_template_csv() -> str:
+    """A ready-to-fill BYOD template (header + two example daily rows for one well).
+
+    Reuses :data:`BYOD_REQUIRED_COLUMNS` so the template can never drift from what
+    :func:`load_fleet_from_csv` requires — the download users get is exactly the
+    schema the loader validates."""
+    header = ",".join(BYOD_REQUIRED_COLUMNS)
+    rows = [
+        "WELL_A,2026-01-01,220,1800,270,120,290,60,99",
+        "WELL_A,2026-01-02,218,1810,268,121,290,60,99",
+    ]
+    return "\n".join([header, *rows]) + "\n"
 
 
 def fleet_summary(fleet: dict[str, pd.DataFrame]) -> dict[str, float]:
