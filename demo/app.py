@@ -389,6 +389,12 @@ def render_overview() -> None:
         table = build_fleet_table(fleet, window_days=window_days,
                                   anomaly_by_well=anomaly_map)
         st.dataframe(table, width="stretch", hide_index=True)
+        st.download_button(
+            "⬇ Download CSV",
+            data=table.to_csv(index=False),
+            file_name="fleet_anomaly_table.csv",
+            mime="text/csv",
+        )
 
     with tab_quality:
         _data_quality_panel(window_days)
