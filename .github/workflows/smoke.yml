@@ -21,6 +21,8 @@ jobs:
           pip install -r requirements.txt
           if [ -f demo/requirements.txt ]; then pip install -r demo/requirements.txt; fi
           pip install streamlit
+      - name: Generate synthetic fleet for tests
+        run: python data/synthetic/generate_fleet.py
       - name: Unit tests
         run: pytest -q
       - name: Render smoke test
