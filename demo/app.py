@@ -389,12 +389,8 @@ def render_overview() -> None:
         table = build_fleet_table(fleet, window_days=window_days,
                                   anomaly_by_well=anomaly_map)
         st.dataframe(table, width="stretch", hide_index=True)
-        st.download_button(
-            "⬇ Download CSV",
-            data=table.to_csv(index=False),
-            file_name="fleet_anomaly_table.csv",
-            mime="text/csv",
-        )
+        st.download_button("⬇ Download fleet table (CSV)", data=table.to_csv(index=False),
+                           file_name="digest_fleet.csv", mime="text/csv")
 
     with tab_quality:
         _data_quality_panel(window_days)
@@ -478,6 +474,8 @@ def _anomaly_panel(anomalies: list, active: list) -> None:
         for a in anomalies
     ])
     st.dataframe(df, width="stretch", hide_index=True)
+    st.download_button("⬇ Download anomaly list (CSV)", data=df.to_csv(index=False),
+                       file_name="digest_anomalies.csv", mime="text/csv")
     theme.source_note(
         "Anomalies flagged by deterministic robust statistics on each well's own "
         "recent baseline: a median/MAD robust z-score (robust_z = 0.6745·(x − median)"
